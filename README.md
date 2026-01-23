@@ -1,1 +1,1 @@
-# Intelligent Knowlegdge Manangement Assistance System
+# Intelligent Knowledge Management Assistance System
