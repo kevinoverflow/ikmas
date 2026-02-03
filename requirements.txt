@@ -6,3 +6,4 @@ langchain-text-splitters
 streamlit
 tiktoken
 pypdf
+chromadb
