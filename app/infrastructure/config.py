@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://llm.scads.ai/v1")
 API_KEY = os.getenv("SCADS_API_KEY") or os.getenv("OPENAI_API_KEY")
@@ -8,3 +9,12 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B")
 TOP_K = int(os.getenv("TOP_K", "3"))
 
 TOKENIZER_DIR = os.getenv("TOKENIZER_DIR", "tokenizers/Qwen3-Embedding-4B")
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../ikmas
+DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
+
+UPLOAD_DIR = DATA_DIR / "uploads"
+CHROMA_DIR = DATA_DIR / "chroma"
+
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+CHROMA_DIR.mkdir(parents=True, exist_ok=True)

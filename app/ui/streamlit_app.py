@@ -1,19 +1,27 @@
 import streamlit as st
+from pathlib import Path
+from typing import Dict, List
 
-from app.rag.ingest import uploads_to_bytes, load_and_split_pdfs
+from app.rag.ingest import split_pdf_file
 from app.rag.retriever import build_inmemory_retriever
 from app.rag.llm import get_client
 from app.rag.prompts import SYSTEM_RULES, wrap_user_message
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
+from app.rag.storage import (
+    list_collection_files,
+    save_upload,
+    get_file_path,
+    delete_file
+)
 
+COLLECTION_ID = "default"
 
-st.set_page_config(page_title="RAG SECI App", layout="centered")
-st.title("RAG SECI App")
+st.set_page_config(page_title="IKMAS", layout="centered")
+st.title("Intelligent Knowledge Management Assistance System")
 
 
 # Session State Init
 if "chat_history" not in st.session_state:
-    # list of dicts: {"user": str, "bot": str, "sources": List[Document]}
     st.session_state.chat_history = []
 
 if "retriever" not in st.session_state:
@@ -21,6 +29,14 @@ if "retriever" not in st.session_state:
 
 if "docs_indexed" not in st.session_state:
     st.session_state.docs_indexed = False
+
+if "pending" not in st.session_state:
+    # list of dicts: {"safe_name","orig_name","data","sha","conflict"}
+    st.session_state.pending = None
+
+if "decisions" not in st.session_state:
+    # safe_name -> "skip"/"replace"/"rename"
+    st.session_state.decisions = {}
 
 
 # Sidebar: Model info
@@ -37,42 +53,100 @@ with st.sidebar:
         st.warning(f"Could not list models: {e}")
 
 
-# Upload PDFs
+st.subheader("📁 Dateien (Server / data/uploads)")
+
+files = list_collection_files(COLLECTION_ID)
+
+if not files:
+    st.info("Keine Dateien vorhanden.")
+else:
+    for f in files:
+        c1, c2, c3 = st.columns([6, 2, 2])
+        with c1:
+            st.write(f"**{f.path.name}**  ·  {f.size_bytes} bytes  ·  {f.sha256[:12]}")
+        with c2:
+            # Download button reads server file bytes
+            path = get_file_path(COLLECTION_ID, f.path.name)
+            if path:
+                st.download_button(
+                    "Download",
+                    data=path.read_bytes(),
+                    file_name=f.path.name,
+                    mime="application/pdf",
+                    key=f"dl::{f.path.name}",
+                    use_container_width=True,
+                )
+        with c3:
+            # Delete with confirm pattern
+            if st.button("Delete", key=f"del::{f.path.name}", use_container_width=True):
+                st.session_state["delete_candidate"] = f.path.name
+
+# Confirm delete (prevents accidental deletes)
+candidate = st.session_state.get("delete_candidate")
+if candidate:
+    st.warning(f"Willst du **{candidate}** wirklich löschen?")
+    cc1, cc2 = st.columns([1, 1])
+    with cc1:
+        if st.button("Ja, löschen", type="primary", use_container_width=True):
+            ok = delete_file(COLLECTION_ID, candidate)
+            st.session_state["delete_candidate"] = None
+            st.toast("Gelöscht" if ok else "Nicht gefunden", icon="🗑️")
+            st.rerun()
+    with cc2:
+        if st.button("Abbrechen", use_container_width=True):
+            st.session_state["delete_candidate"] = None
+            st.rerun()
+
+
+st.divider()
+st.subheader("⬆️ Neue PDFs hinzufügen")
+
 uploaded_files = st.file_uploader(
-    "Upload one or more PDF files",
+    "PDFs auswählen",
     type=["pdf"],
     accept_multiple_files=True,
 )
 
-col_a, col_b = st.columns([1, 1])
-with col_a:
-    index_btn = st.button(
-        "Index PDFs",
-        type="primary",
-        disabled=not uploaded_files,
-        use_container_width=True,
-    )
+if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
+    # simple policy for now:
+    # identical => skip, name-conflict => ask globally (or per file, if you prefer)
+    name_conflict_mode = st.selectbox("Bei Namenskonflikt:", ["skip", "replace", "rename"], index=0)
 
-with col_b:
-    reset_btn = st.button(
-        "Reset Session",
-        disabled=not (st.session_state.docs_indexed or st.session_state.chat_history),
-        use_container_width=True,
-    )
+    saved = 0
+    skipped = 0
+    replaced = 0
+    renamed = 0
 
-if reset_btn:
-    st.session_state.chat_history = []
-    st.session_state.retriever = None
-    st.session_state.docs_indexed = False
+    for uf in uploaded_files:
+        status, _ = save_upload(
+            collection_id=COLLECTION_ID,
+            filename=uf.name,
+            data=uf.getvalue(),
+            on_name_conflict=name_conflict_mode,
+        )
+        if status == "saved":
+            saved += 1
+        elif status == "skipped_identical":
+            skipped += 1
+        elif status == "replaced":
+            replaced += 1
+        elif status == "renamed":
+            renamed += 1
+
+    st.success(f"saved={saved}, replaced={replaced}, renamed={renamed}, skipped_identical={skipped}")
     st.rerun()
 
-if index_btn and uploaded_files:
-    with st.spinner("Processing PDFs..."):
-        files_as_bytes = uploads_to_bytes(uploaded_files)
-        documents = load_and_split_pdfs(files_as_bytes)
-        st.session_state.retriever = build_inmemory_retriever(documents)
-        st.session_state.docs_indexed = True
-    st.success(f"Indexed {len(documents)} document chunks")
+
+st.divider()
+st.subheader("🔎 Index (InMemory) aus serverseitigen Dateien")
+
+if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID)) == 0):
+    docs = []
+    for stored in list_collection_files(COLLECTION_ID):
+        docs.extend(split_pdf_file(stored))
+    st.session_state.retriever = build_inmemory_retriever(docs)
+    st.session_state.docs_indexed = True
+    st.success(f"Indexed {len(docs)} chunks")
 
 
 # Helpers (UI-only)
@@ -89,27 +163,22 @@ def _format_chat_history_for_messages(chat_history):
 
 
 def ask_rag(question: str):
-    """Retrieval + Prompt build + LLM call. Returns (answer, retrieved_docs)."""
     if st.session_state.retriever is None:
         raise RuntimeError("Retriever not initialized. Please index PDFs first.")
 
-    # 1) retrieve
     docs = st.session_state.retriever.invoke(question)
     context = _format_docs(docs)
 
-    # 2) build messages
     messages = [{"role": "system", "content": SYSTEM_RULES}]
     messages += _format_chat_history_for_messages(st.session_state.chat_history)
     messages.append({"role": "user", "content": wrap_user_message(context=context, question=question)})
 
-    # 3) call model
     client = get_client()
     resp = client.chat.completions.create(
         model=LANGUAGE_MODEL_NAME,
         messages=messages,
     )
-    answer = resp.choices[0].message.content
-    return answer, docs
+    return resp.choices[0].message.content, docs
 
 
 # Chat

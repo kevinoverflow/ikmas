@@ -1,16 +1,19 @@
 import os
 import tempfile
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Literal
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
 
 from app.rag.tokenizer import get_tokenizer
+from app.rag.storage import save_upload, StoredFile
+
+ConflictAction = Literal["skip", "replace", "rename"]
 
 def uploads_to_bytes(files) -> List[Tuple[str, bytes]]:
     return [(f.name, f.getvalue()) for f in files]
 
-def load_and_split_pdfs(files_as_bytes: List[Tuple[str, bytes]], chunk_size=512, chunk_overlap=80):
+def split_pdf_file(stored: StoredFile, chunk_size=512, chunk_overlap=80):
     tokenizer = get_tokenizer()
 
     splitter = RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
@@ -20,21 +23,72 @@ def load_and_split_pdfs(files_as_bytes: List[Tuple[str, bytes]], chunk_size=512,
         add_start_index=True
     )
 
-    all_docs = []
-    for filename, data in files_as_bytes:
-        temp_path = None
+    docs = PyPDFLoader(str(stored.path)).load()
+
+    for d in docs:
+        d.metadata.update({
+            "file_id": stored.file_id,
+            "source": stored.original_name,
+        })
+
+    return splitter.split_documents(docs)
+
+def ingest_uploads(
+        collection_id: str, 
+        uploaded_files,
+        on_name_conflict: ConflictAction = "skip",
+        chunk_size: int = 512,
+        chunk_overlap: int = 80,
+        ) -> Tuple[List, dict]:
+    """
+    Takes Streamlit UploadedFile objects, persists them, returns:
+      - all_chunks: list of split LangChain Documents
+      - stats: counts of saved/skipped/replaced/renamed/errors
+
+    Behavior:
+    - Identical content (hash match in collection) => skipped_identical
+    - Same filename, different content => controlled by on_name_conflict
+    """
+    all_chunks = []
+    stats = {
+        "saved": 0,
+        "replaced": 0,
+        "renamed": 0,
+        "skipped_identical": 0,
+        "skipped_conflict": 0,
+        "errors": 0,
+    }
+    
+    for f in uploaded_files:
         try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(data)
-                temp_path = tmp.name
+            data = f.getValue()
+            status, stored = save_upload(
+            collection_id=collection_id,
+            filename=f.name,
+            data=data,
+            on_name_conflict=on_name_conflict
+            )
 
-            docs = PyPDFLoader(temp_path).load()
-            for d in docs:
-                d.metadata["source"] = filename
+            if status in stats:
+                stats[status] += 1
+            else: 
+                stats["saved"] += 1
 
-            all_docs.extend(splitter.split_documents(docs))
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                os.remove(temp_path)
+            if stored is None:
+                continue
 
-    return all_docs
+            chunks = split_pdf_file(
+                stored,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap
+            )
+            all_chunks.extend(chunks)
+
+            
+        except Exception:
+            stats["errors"] += 1
+            # don't crash whole ingest; caller can surface errors if desired
+            continue
+
+    return all_chunks, stats
+                                
