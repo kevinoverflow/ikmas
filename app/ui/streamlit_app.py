@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Dict, List
 
 from app.rag.ingest import split_pdf_file
-from app.rag.retriever import build_inmemory_retriever
+from app.rag.retriever import build_inmemory_retriever, retrieve_and_rerank
 from app.rag.llm import get_client
 from app.rag.prompts import SYSTEM_RULES, wrap_user_message
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
@@ -13,6 +13,7 @@ from app.rag.storage import (
     get_file_path,
     delete_file
 )
+from app.rag.vectorstore import add_docs, clear_collection
 
 COLLECTION_ID = "default"
 
@@ -23,9 +24,6 @@ st.title("Intelligent Knowledge Management Assistance System")
 # Session State Init
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
-
-if "retriever" not in st.session_state:
-    st.session_state.retriever = None
 
 if "docs_indexed" not in st.session_state:
     st.session_state.docs_indexed = False
@@ -138,15 +136,22 @@ if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
 
 
 st.divider()
-st.subheader("🔎 Index (InMemory) aus serverseitigen Dateien")
+st.subheader("🔎 Index (Chroma) aus serverseitigen Dateien")
+reindex = st.checkbox("Reindex (Chroma collection vorher leeren)", value=False)
 
 if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID)) == 0):
-    docs = []
-    for stored in list_collection_files(COLLECTION_ID):
-        docs.extend(split_pdf_file(stored))
-    st.session_state.retriever = build_inmemory_retriever(docs)
-    st.session_state.docs_indexed = True
-    st.success(f"Indexed {len(docs)} chunks")
+    with st.spinner("Chunking + Embedding + Writing to Chroma..."):
+        if reindex: 
+            clear_collection(COLLECTION_ID)
+
+        docs = []
+        for stored in list_collection_files(COLLECTION_ID):
+            docs.extend(split_pdf_file(stored))
+
+        n = add_docs(COLLECTION_ID, docs)
+        st.session_state.docs_indexed = True
+
+    st.success(f"Indexed {n} chunks")
 
 
 # Helpers (UI-only)
@@ -163,11 +168,8 @@ def _format_chat_history_for_messages(chat_history):
 
 
 def ask_rag(question: str):
-    if st.session_state.retriever is None:
-        raise RuntimeError("Retriever not initialized. Please index PDFs first.")
-
-    docs = st.session_state.retriever.invoke(question)
-    context = _format_docs(docs)
+    docs = retrieve_and_rerank("default", question, k_retrieve=30, k_final=5)
+    context = "\n\n".join(d.page_content for d in docs)
 
     messages = [{"role": "system", "content": SYSTEM_RULES}]
     messages += _format_chat_history_for_messages(st.session_state.chat_history)
@@ -185,7 +187,6 @@ def ask_rag(question: str):
 st.markdown("---")
 query = st.chat_input(
     "Ask a question about your PDFs:",
-    disabled=st.session_state.retriever is None,
 )
 
 if query:

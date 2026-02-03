@@ -2,6 +2,8 @@ from langchain_openai.embeddings import OpenAIEmbeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 
 from app.infrastructure.config import EMBEDDING_MODEL, TOP_K, BASE_URL, API_KEY
+from app.rag.vectorstore import retrieve
+from app.rag.reranker import rerank
 
 def build_inmemory_retriever(docs):
     embeddings = OpenAIEmbeddings(
@@ -13,3 +15,22 @@ def build_inmemory_retriever(docs):
 
     vs = InMemoryVectorStore.from_documents(docs, embedding=embeddings)
     return vs.as_retriever(search_kwargs={"k": TOP_K})
+
+def retrieve_and_rerank(collection_name: str, query: str, k_retrieve: int = 30, k_final: int = 5):
+    docs = retrieve(collection_name, query, k=k_retrieve)
+    passages = [d.page_content for d in docs]
+
+    results = rerank(query=query, passages=passages, top_n=k_final)
+
+    # results: list of {"index": i, "relevance_score": s}
+    ranked_docs = []
+    for item in results:
+        idx = item.get("index")
+        if idx is None:
+            continue
+        d = docs[int(idx)]
+        # attach score for debugging/citations
+        d.metadata["rerank_score"] = item.get("relevance_score")
+        ranked_docs.append(d)
+
+    return ranked_docs
