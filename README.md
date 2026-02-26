@@ -73,6 +73,19 @@ ermittelt, um den wahrgenommenen Mehrwert des IKMAS zu sichern.
 
 ## 🛠 Installation & Start
 
+### Voraussetzungen
+
+- Python 3.10+
+- Eine gesetzte API-Variable: `SCADS_API_KEY` (alternativ `OPENAI_API_KEY`)
+
+Beispiel:
+
+```bash
+export SCADS_API_KEY="<dein_key>"
+```
+
+> Hinweis: `run.sh` fragt den Schlüssel interaktiv ab, falls er nicht gesetzt ist. In CI-/nicht-interaktiven Umgebungen sollte der Key daher **vorher** als Umgebungsvariable gesetzt werden.
+
 1. Abhängigkeiten installieren:
 
 ```bash

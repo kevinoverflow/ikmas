@@ -1,9 +1,7 @@
 import streamlit as st
-from pathlib import Path
-from typing import Dict, List
 
 from app.rag.ingest import split_pdf_file
-from app.rag.retriever import build_inmemory_retriever, retrieve_and_rerank
+from app.rag.retriever import retrieve_and_rerank
 from app.rag.llm import get_client
 from app.rag.prompts import SYSTEM_RULES, wrap_user_message
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
@@ -27,15 +25,6 @@ if "chat_history" not in st.session_state:
 
 if "docs_indexed" not in st.session_state:
     st.session_state.docs_indexed = False
-
-if "pending" not in st.session_state:
-    # list of dicts: {"safe_name","orig_name","data","sha","conflict"}
-    st.session_state.pending = None
-
-if "decisions" not in st.session_state:
-    # safe_name -> "skip"/"replace"/"rename"
-    st.session_state.decisions = {}
-
 
 # Sidebar: Model info
 with st.sidebar:
@@ -105,11 +94,9 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
-    # simple policy for now:
-    # identical => skip, name-conflict => ask globally (or per file, if you prefer)
-    name_conflict_mode = st.selectbox("Bei Namenskonflikt:", ["skip", "replace", "rename"], index=0)
+name_conflict_mode = st.selectbox("Bei Namenskonflikt:", ["skip", "replace", "rename"], index=0)
 
+if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
     saved = 0
     skipped = 0
     replaced = 0
@@ -152,11 +139,6 @@ if st.button("Index now", type="primary", disabled=len(list_collection_files(COL
         st.session_state.docs_indexed = True
 
     st.success(f"Indexed {n} chunks")
-
-
-# Helpers (UI-only)
-def _format_docs(docs) -> str:
-    return "\n\n".join(d.page_content for d in docs)
 
 
 def _format_chat_history_for_messages(chat_history):

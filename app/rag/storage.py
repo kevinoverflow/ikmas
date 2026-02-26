@@ -6,7 +6,7 @@ import hashlib
 import os 
 import re 
 import tempfile
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import List, Literal, Optional, Tuple
 
 from app.infrastructure.config import UPLOAD_DIR
 
@@ -139,7 +139,6 @@ def save_upload(
     ensure_dir(coll_dir)
 
     existing = list_collection_files(collection_id)
-    by_name: Dict[str, StoredFile] = {f.path.name: f for f in existing}
     existing_hashes = {f.sha256 for f in existing}
 
     # 1) identical content exists somewhere -> skip
@@ -205,7 +204,7 @@ def delete_file(collection_id: str, filename: str) -> bool:
 def get_file_path(collection_id: str, filename: str) -> Optional[Path]:
     safe = sanitize_filename(filename)
     path = UPLOAD_DIR / collection_id / safe
-    return path if path.exists and path.is_file() else None
+    return path if path.exists() and path.is_file() else None
 
 def list_filenames(collection_id: str) -> List[str]:
     return [f.path.name for f in list_collection_files(collection_id)]

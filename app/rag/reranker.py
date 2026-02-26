@@ -1,5 +1,4 @@
 from typing import List, Dict, Any
-import os
 import requests
 
 from app.infrastructure.config import BASE_URL, API_KEY, RERANK_MODEL

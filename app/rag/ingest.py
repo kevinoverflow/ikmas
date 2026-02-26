@@ -1,6 +1,4 @@
-import os
-import tempfile
-from typing import List, Tuple, Optional, Literal
+from typing import List, Tuple, Literal
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
@@ -57,11 +55,12 @@ def ingest_uploads(
         "skipped_identical": 0,
         "skipped_conflict": 0,
         "errors": 0,
+        "error_messages": [],
     }
     
     for f in uploaded_files:
         try:
-            data = f.getValue()
+            data = f.getvalue()
             status, stored = save_upload(
             collection_id=collection_id,
             filename=f.name,
@@ -85,8 +84,9 @@ def ingest_uploads(
             all_chunks.extend(chunks)
 
             
-        except Exception:
+        except Exception as e:
             stats["errors"] += 1
+            stats["error_messages"].append(f"{getattr(f, 'name', '<unknown>')}: {e}")
             # don't crash whole ingest; caller can surface errors if desired
             continue
 

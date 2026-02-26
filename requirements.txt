@@ -7,3 +7,5 @@ streamlit
 tiktoken
 pypdf
 chromadb
+pytest
+transformers
