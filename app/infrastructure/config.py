@@ -16,6 +16,8 @@ DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
 
 UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
+DB_PATH = Path(os.getenv("DB_PATH", DATA_DIR / "ikmas.db"))
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)

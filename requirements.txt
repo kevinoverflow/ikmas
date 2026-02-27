@@ -9,3 +9,7 @@ pypdf
 chromadb
 pytest
 transformers
+fastapi
+uvicorn
+python-multipart
+httpx

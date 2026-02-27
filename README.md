@@ -38,6 +38,17 @@ Die Implementierung setzt auf Open-Source-Technologien wie:
 - **[ChromaDB](https://www.trychroma.com/)** (Vektordatenbank)
 - [ScaDS.ai](https://scads.ai/) **LLMs**
 
+### MVP API Highlights (v1)
+
+- `POST /v1/chat` now supports hybrid mode control via `mode_override` (`AUTO|SWP|ESN|SKM`).
+- `POST /v1/router/preview` returns router decisions (mode distance, SECI state, role, retrieval policy) without an LLM call.
+- Chat responses include:
+  - schema-first `data`
+  - `citations` + `why_sources`
+  - `router` metadata
+  - `retrieval.policy_applied`
+  - validation incl. `citation_coverage`
+
 ---
 
 ## 📂 Projektstruktur
