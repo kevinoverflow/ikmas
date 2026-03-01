@@ -9,3 +9,5 @@ pypdf
 chromadb
 pytest
 transformers
+jsonschema
+python-docx

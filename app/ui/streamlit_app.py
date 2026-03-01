@@ -1,47 +1,51 @@
+from __future__ import annotations
+
+import json
+import uuid
+from pathlib import Path
+
 import streamlit as st
 
-from app.rag.ingest import split_pdf_file
-from app.rag.retriever import retrieve_and_rerank
-from app.rag.llm import get_client
-from app.rag.prompts import SYSTEM_RULES, wrap_user_message
-from app.infrastructure.config import LANGUAGE_MODEL_NAME
-from app.rag.storage import (
-    list_collection_files,
-    save_upload,
-    get_file_path,
-    delete_file
-)
+from app.backend.orchestrator import handle_turn
+from app.backend.sqlite_store import init_db
+from app.rag.ingest import split_file
+from app.rag.storage import delete_file, get_file_path, list_collection_files, save_upload
 from app.rag.vectorstore import add_docs, clear_collection
 
 COLLECTION_ID = "default"
 
+MIME_BY_SUFFIX = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".md": "text/markdown",
+    ".txt": "text/plain",
+}
+
 st.set_page_config(page_title="IKMAS", layout="centered")
 st.title("Intelligent Knowledge Management Assistance System")
 
-
-# Session State Init
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "delete_candidate" not in st.session_state:
+    st.session_state.delete_candidate = None
 
-if "docs_indexed" not in st.session_state:
-    st.session_state.docs_indexed = False
+init_db()
 
-# Sidebar: Model info
 with st.sidebar:
-    st.header("Model Information")
-    try:
-        client = get_client()
-        models = client.models.list()
-        for m in models.data:
-            st.markdown(m.id)
-        st.divider()
-        st.caption(f"Chat model: {LANGUAGE_MODEL_NAME}")
-    except Exception as e:
-        st.warning(f"Could not list models: {e}")
+    st.subheader("Interaktionsmodus")
+    role_mode = st.radio("Rollenwahl", ["Automatisch", "Manuell"], index=0)
+    manual_role = None
+    if role_mode == "Manuell":
+        manual_role = st.selectbox(
+            "Rolle",
+            ["DigitalMemoryAgent", "MentorAgent", "TutoringAgent", "ConceptMiningAgent"],
+            index=1,
+        )
 
-
-st.subheader("📁 Dateien (Server / data/uploads)")
-
+st.caption(f"Session: {st.session_state.session_id[:8]}")
+st.subheader("Dateien (Server / data/uploads)")
 files = list_collection_files(COLLECTION_ID)
 
 if not files:
@@ -52,45 +56,41 @@ else:
         with c1:
             st.write(f"**{f.path.name}**  ·  {f.size_bytes} bytes  ·  {f.sha256[:12]}")
         with c2:
-            # Download button reads server file bytes
             path = get_file_path(COLLECTION_ID, f.path.name)
             if path:
                 st.download_button(
                     "Download",
                     data=path.read_bytes(),
                     file_name=f.path.name,
-                    mime="application/pdf",
+                    mime=MIME_BY_SUFFIX.get(Path(f.path.name).suffix.lower(), "application/octet-stream"),
                     key=f"dl::{f.path.name}",
                     use_container_width=True,
                 )
         with c3:
-            # Delete with confirm pattern
             if st.button("Delete", key=f"del::{f.path.name}", use_container_width=True):
-                st.session_state["delete_candidate"] = f.path.name
+                st.session_state.delete_candidate = f.path.name
 
-# Confirm delete (prevents accidental deletes)
-candidate = st.session_state.get("delete_candidate")
+candidate = st.session_state.delete_candidate
 if candidate:
     st.warning(f"Willst du **{candidate}** wirklich löschen?")
     cc1, cc2 = st.columns([1, 1])
     with cc1:
         if st.button("Ja, löschen", type="primary", use_container_width=True):
             ok = delete_file(COLLECTION_ID, candidate)
-            st.session_state["delete_candidate"] = None
+            st.session_state.delete_candidate = None
             st.toast("Gelöscht" if ok else "Nicht gefunden", icon="🗑️")
             st.rerun()
     with cc2:
         if st.button("Abbrechen", use_container_width=True):
-            st.session_state["delete_candidate"] = None
+            st.session_state.delete_candidate = None
             st.rerun()
 
-
 st.divider()
-st.subheader("⬆️ Neue PDFs hinzufügen")
+st.subheader("Neue Dateien hinzufügen")
 
 uploaded_files = st.file_uploader(
-    "PDFs auswählen",
-    type=["pdf"],
+    "Dateien auswählen",
+    type=["pdf", "docx", "md", "txt"],
     accept_multiple_files=True,
 )
 
@@ -121,78 +121,126 @@ if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
     st.success(f"saved={saved}, replaced={replaced}, renamed={renamed}, skipped_identical={skipped}")
     st.rerun()
 
-
 st.divider()
-st.subheader("🔎 Index (Chroma) aus serverseitigen Dateien")
+st.subheader("Index (Chroma) aus serverseitigen Dateien")
 reindex = st.checkbox("Reindex (Chroma collection vorher leeren)", value=False)
 
 if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID)) == 0):
     with st.spinner("Chunking + Embedding + Writing to Chroma..."):
-        if reindex: 
+        if reindex:
             clear_collection(COLLECTION_ID)
 
         docs = []
         for stored in list_collection_files(COLLECTION_ID):
-            docs.extend(split_pdf_file(stored))
+            docs.extend(split_file(stored, project=COLLECTION_ID, artefact_type="source_document"))
 
         n = add_docs(COLLECTION_ID, docs)
-        st.session_state.docs_indexed = True
 
     st.success(f"Indexed {n} chunks")
 
 
-def _format_chat_history_for_messages(chat_history):
-    messages = []
-    for turn in chat_history:
-        messages.append({"role": "user", "content": turn["user"]})
-        messages.append({"role": "assistant", "content": turn["bot"]})
-    return messages
+def _render_turn(turn: dict) -> None:
+    payload = turn["payload"]
+
+    st.chat_message("user").markdown(turn["user"])
+    st.chat_message("assistant").markdown(payload.get("assistant_message", ""))
+
+    role = payload.get("role")
+    state = payload.get("state")
+    confidence = payload.get("telemetry", {}).get("confidence")
+    phase = payload.get("interaction_phase")
+    mode = payload.get("mode")
+    st.caption(f"Mode: {mode} | Phase: {phase} | Role: {role} | State: {state} | Confidence: {confidence}")
+
+    questions = payload.get("questions", [])
+    if questions:
+        with st.expander("Rückfragen"):
+            for q in questions:
+                st.markdown(f"- **{q.get('prompt', 'Question')}** ({q.get('type', 'text')})")
+                opts = q.get("options", [])
+                if opts:
+                    st.caption("Optionen: " + ", ".join(opts))
+
+    artefacts = payload.get("artefacts", [])
+    if artefacts:
+        with st.expander("Artefakte"):
+            for a in artefacts:
+                st.markdown(f"### {a.get('title', 'Untitled')} ({a.get('type', 'summary')})")
+                st.markdown(a.get("body_md", ""))
+
+    citations = payload.get("citations", [])
+    if citations:
+        with st.expander("Quellen"):
+            for c in citations:
+                st.markdown(f"- `{c.get('source_id', 'unknown')}` (score={c.get('score', 0.0):.2f})")
 
 
-def ask_rag(question: str):
-    docs = retrieve_and_rerank("default", question, k_retrieve=30, k_final=5)
-    context = "\n\n".join(d.page_content for d in docs)
-
-    messages = [{"role": "system", "content": SYSTEM_RULES}]
-    messages += _format_chat_history_for_messages(st.session_state.chat_history)
-    messages.append({"role": "user", "content": wrap_user_message(context=context, question=question)})
-
-    client = get_client()
-    resp = client.chat.completions.create(
-        model=LANGUAGE_MODEL_NAME,
-        messages=messages,
-    )
-    return resp.choices[0].message.content, docs
-
-
-# Chat
 st.markdown("---")
-query = st.chat_input(
-    "Ask a question about your PDFs:",
-)
+query = st.chat_input("Frage zu deinen Dokumenten oder antworte auf Rückfragen")
 
 if query:
     with st.spinner("Thinking..."):
         try:
-            response, retrieved_docs = ask_rag(query)
+            payload = handle_turn(
+                session_id=st.session_state.session_id,
+                user_input=query,
+                user_id="streamlit_user",
+                role_override=manual_role,
+            )
         except Exception as e:
             st.error(f"Error: {e}")
             st.stop()
 
-    st.session_state.chat_history.append(
-        {"user": query, "bot": response, "sources": retrieved_docs}
-    )
+    st.session_state.chat_history.append({"user": query, "payload": payload})
+    st.rerun()
 
-
-# Render chat + sources
 if st.session_state.chat_history:
     for turn in st.session_state.chat_history:
-        st.chat_message("user").markdown(turn["user"])
-        st.chat_message("ai").markdown(turn["bot"])
+        _render_turn(turn)
 
-        with st.expander("Sources"):
-            for i, doc in enumerate(turn["sources"], 1):
-                page = doc.metadata.get("page", "N/A")
-                source = doc.metadata.get("source", "Uploaded PDF")
-                st.markdown(f"**{i}. {source} (page {page})**")
-                st.caption(doc.page_content[:300] + "…")
+# Role-gate structured answers.
+if st.session_state.chat_history:
+    last_payload = st.session_state.chat_history[-1]["payload"]
+    last_questions = last_payload.get("questions", [])
+    if last_questions:
+        st.markdown("---")
+        is_role_gate_question = any(str(q.get("id", "")).startswith("rg_") for q in last_questions)
+        st.subheader("Rückfragen beantworten")
+        with st.form("followup_answers_form"):
+            answers = {}
+            for q in last_questions:
+                qid = q.get("id", "q")
+                qtype = q.get("type", "single_choice")
+                prompt = q.get("prompt", qid)
+                opts = q.get("options", [])
+
+                if qtype == "single_choice" and opts:
+                    answers[qid] = st.radio(prompt, opts, key=f"ans::{qid}")
+                elif qtype == "multi_choice" and opts:
+                    answers[qid] = st.multiselect(prompt, opts, key=f"ans::{qid}")
+                else:
+                    answers[qid] = st.text_input(prompt, key=f"ans::{qid}")
+
+            custom_question = st.text_input(
+                "Eigene Rückfrage (optional)",
+                key="ans::custom_question",
+                placeholder="Optional: freie Ergänzung",
+            )
+            submitted = st.form_submit_button("Antworten senden")
+
+        if submitted:
+            structured_payload = {"role_gate_answers": answers} if is_role_gate_question else {"answers": answers}
+            if custom_question.strip():
+                structured_payload["custom_question"] = custom_question.strip()
+            structured_input = json.dumps(structured_payload, ensure_ascii=True)
+
+            with st.spinner("Thinking..."):
+                payload = handle_turn(
+                    session_id=st.session_state.session_id,
+                    user_input=structured_input,
+                    user_id="streamlit_user",
+                    role_override=manual_role,
+                )
+
+            st.session_state.chat_history.append({"user": structured_input, "payload": payload})
+            st.rerun()
