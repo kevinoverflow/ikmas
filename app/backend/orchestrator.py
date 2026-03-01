@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.backend.artefacts import persist_artefacts_with_links
+from app.backend.conversation_logger import log_conversation_event
 from app.backend.fsm import decide_state
 from app.backend.intent_distance import classify_intent, estimate_distance
 from app.backend.llm_client import call_llm_json, repair_llm_json
@@ -173,6 +174,16 @@ def handle_turn(
         artefacts=payload.get("artefacts", []),
         citations=payload.get("citations", citations),
         project="default",
+    )
+
+    # Append JSONL analytics event for offline conversation evaluation.
+    log_conversation_event(
+        session_id=session_id,
+        user_id=user_id,
+        user_message=user_input,
+        payload=payload,
+        system_state=system_state,
+        role_override=role_override,
     )
 
     return payload

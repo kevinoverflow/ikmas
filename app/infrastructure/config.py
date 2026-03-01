@@ -15,6 +15,8 @@ TOKENIZER_DIR = os.getenv("TOKENIZER_DIR", "tokenizers/Qwen3-Embedding-4B")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]  # .../ikmas
 DATA_DIR = Path(os.getenv("DATA_DIR", PROJECT_ROOT / "data"))
 SQLITE_DB_PATH = Path(os.getenv("SQLITE_DB_PATH", DATA_DIR / "ikmas.db"))
+LOG_DIR = Path(os.getenv("LOG_DIR", DATA_DIR / "logs"))
+CONVERSATION_LOG_PATH = Path(os.getenv("CONVERSATION_LOG_PATH", LOG_DIR / "conversation_events.jsonl"))
 
 UPLOAD_DIR = DATA_DIR / "uploads"
 CHROMA_DIR = DATA_DIR / "chroma"
@@ -22,3 +24,4 @@ CHROMA_DIR = DATA_DIR / "chroma"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
 SQLITE_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
