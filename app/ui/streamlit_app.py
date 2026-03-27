@@ -2,8 +2,8 @@ import streamlit as st
 
 from app.rag.ingest import split_pdf_file
 from app.rag.retriever import retrieve_and_rerank
-from app.rag.llm import get_client
-from app.rag.prompts import SYSTEM_RULES, wrap_user_message
+from app.backend.llm_client import get_client
+from app.prompts.prompts import SYSTEM_RULES, wrap_user_message
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
 from app.rag.storage import (
     list_collection_files,
