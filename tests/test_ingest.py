@@ -1,5 +1,6 @@
 import sys
 import types
+from pathlib import Path
 
 # Stub transformers before importing ingest -> tokenizer
 transformers_stub = types.ModuleType("transformers")
@@ -19,6 +20,7 @@ transformers_stub.AutoTokenizer = _DummyAutoTokenizer
 sys.modules.setdefault("transformers", transformers_stub)
 
 from app.rag import ingest
+from app.rag.storage import StoredFile
 
 
 class FakeUpload:
@@ -28,6 +30,72 @@ class FakeUpload:
 
     def getvalue(self):
         return self._data
+
+
+class FakeDocument:
+    def __init__(self, page_content: str, metadata: dict | None = None):
+        self.page_content = page_content
+        self.metadata = metadata or {}
+
+
+def test_uploads_to_bytes_reads_each_upload():
+    uploads = [FakeUpload("a.pdf", b"aaa"), FakeUpload("b.pdf", b"bbb")]
+
+    assert ingest.uploads_to_bytes(uploads) == [
+        ("a.pdf", b"aaa"),
+        ("b.pdf", b"bbb"),
+    ]
+
+
+def test_split_pdf_file_adds_storage_metadata_before_splitting(monkeypatch, tmp_path):
+    seen = {}
+    docs = [FakeDocument("page one"), FakeDocument("page two", {"page": 2})]
+
+    class FakeSplitter:
+        def split_documents(self, split_docs):
+            seen["split_docs"] = split_docs
+            return ["chunk-a", "chunk-b"]
+
+    class FakeTextSplitter:
+        @staticmethod
+        def from_huggingface_tokenizer(tokenizer, chunk_size, chunk_overlap, add_start_index):
+            seen["tokenizer"] = tokenizer
+            seen["chunk_size"] = chunk_size
+            seen["chunk_overlap"] = chunk_overlap
+            seen["add_start_index"] = add_start_index
+            return FakeSplitter()
+
+    class FakeLoader:
+        def __init__(self, path):
+            seen["path"] = path
+
+        def load(self):
+            return docs
+
+    tokenizer = object()
+    stored = StoredFile(
+        file_id="file-123",
+        path=tmp_path / "doc.pdf",
+        original_name="source.pdf",
+        size_bytes=42,
+        sha256="abc",
+    )
+
+    monkeypatch.setattr(ingest, "get_tokenizer", lambda: tokenizer)
+    monkeypatch.setattr(ingest, "RecursiveCharacterTextSplitter", FakeTextSplitter)
+    monkeypatch.setattr(ingest, "PyPDFLoader", FakeLoader)
+
+    chunks = ingest.split_pdf_file(stored, chunk_size=256, chunk_overlap=32)
+
+    assert chunks == ["chunk-a", "chunk-b"]
+    assert seen["tokenizer"] is tokenizer
+    assert seen["chunk_size"] == 256
+    assert seen["chunk_overlap"] == 32
+    assert seen["add_start_index"] is True
+    assert seen["path"] == str(Path(tmp_path / "doc.pdf"))
+    assert docs[0].metadata == {"file_id": "file-123", "source": "source.pdf"}
+    assert docs[1].metadata == {"page": 2, "file_id": "file-123", "source": "source.pdf"}
+    assert seen["split_docs"] == docs
 
 
 def test_ingest_uploads_uses_getvalue_and_collects_chunks(monkeypatch):
