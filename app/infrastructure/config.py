@@ -19,3 +19,5 @@ CHROMA_DIR = DATA_DIR / "chroma"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 CHROMA_DIR.mkdir(parents=True, exist_ok=True)
+
+DB_PATH = Path("data/ikmas.db")
