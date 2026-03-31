@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 set -e
 
+PYTHON_BIN="python3.11"
+
 VENV_DIR=".venv"
 REQ_FILE="requirements.txt"
 REQ_HASH_FILE="$VENV_DIR/.requirements.hash"
 APP_PATH="app/ui/streamlit_app.py"
 
+# --- Check if python3.11 exists ---
+if ! command -v $PYTHON_BIN &> /dev/null; then
+  echo "❌ $PYTHON_BIN not found. Please install it with:"
+  echo "   brew install python@3.11"
+  exit 1
+fi
+
 # --- Create venv if missing ---
 if [ ! -d "$VENV_DIR" ]; then
-  echo "🔧 Creating virtual environment..."
-  python3 -m venv "$VENV_DIR"
+  echo "🔧 Creating virtual environment with Python 3.11..."
+  $PYTHON_BIN -m venv "$VENV_DIR"
 fi
 
 # --- Activate venv ---
@@ -26,7 +35,7 @@ if [ -f "$REQ_FILE" ]; then
 
   if [ "$CURRENT_HASH" != "$STORED_HASH" ]; then
     echo "📦 Installing / updating dependencies..."
-    pip install --upgrade pip
+    pip install --upgrade pip setuptools wheel
     pip install -r "$REQ_FILE"
     echo "$CURRENT_HASH" > "$REQ_HASH_FILE"
   else
