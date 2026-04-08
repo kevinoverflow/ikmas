@@ -4,6 +4,14 @@ import json
 from typing import Any
 
 from app.domain.schema import AssistantPayload
+from app.rag.llm import OpenAIChatBackend
+
+
+def get_client():
+    """
+    Compatibility helper for UI code that needs raw access to the provider client.
+    """
+    return OpenAIChatBackend().client
 
 
 class LLMClient:
