@@ -9,7 +9,7 @@ from app.backend.role_router import role_router
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
 from app.domain.schema import AssistantPayload
-from app.backend.sqlite_store import create_session, log_turn, save_artefacts
+from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts
 from app.backend.llm_client import LLMClient
 from app.rag.llm import OpenAIChatBackend
 
@@ -37,17 +37,65 @@ def build_prompt(
     intent: str,
     distance: str,
     confidence: float,
+    chat_history: list[dict[str, str]] | None = None,
 ) -> str:
-    context_block = "\n\n".join(
-        f"[{i + 1}] {chunk['text']}"
-        for i, chunk in enumerate(retrieved_chunks[:5])
-    )
+    context_lines: list[str] = []
+    for i, chunk in enumerate(retrieved_chunks[:5], start=1):
+        locator = f"p. {chunk['page']}" if chunk.get("page") is not None else "unknown"
+        context_lines.append(
+            "\n".join(
+                [
+                    (
+                        f"[{i}] chunk_id={chunk['chunk_id']} "
+                        f"source={chunk['source']} locator={locator}"
+                    ),
+                    chunk["text"],
+                ]
+            )
+        )
+
+    context_block = "\n\n".join(context_lines) if context_lines else "(kein Retrieval-Kontext)"
+
+    history_lines: list[str] = []
+    for turn in (chat_history or [])[-5:]:
+        user_turn = turn.get("user", "").strip()
+        assistant_turn = turn.get("assistant", "").strip()
+        if user_turn:
+            history_lines.append(f"Nutzer: {user_turn}")
+        if assistant_turn:
+            history_lines.append(f"Assistant: {assistant_turn}")
+
+    history_block = "\n".join(history_lines) if history_lines else "(keine bisherige Unterhaltung)"
 
     return f"""
 Du bist {role}.
 Antworte ausschließlich als JSON entsprechend dem definierten Schema.
 Keine Markdown-Umrandung.
 Kein Zusatztext außerhalb des JSON.
+
+Gib genau diese Felder zurück:
+- role
+- state
+- assistant_message
+- questions
+- artefacts
+- actions
+- citations
+- telemetry
+
+Wichtige Regeln:
+- role muss "{role}" sein.
+- state muss {"null" if state is None else f'"{state}"'} sein.
+- assistant_message muss immer ein nicht-leerer String sein.
+- questions, artefacts, actions und citations müssen Arrays sein.
+- citations dürfen nur chunk_id-Werte aus dem Retrieved Context referenzieren.
+- telemetry muss diese Werte enthalten:
+  - intent: "{intent}"
+  - distance: "{distance}"
+  - confidence: {confidence:.3f}
+  - retrieval_count: {min(len(retrieved_chunks), 5)}
+  - repair_used: false
+  - fallback_used: false
 
 Kontext:
 - intent: {intent}
@@ -58,12 +106,52 @@ Kontext:
 Nutzeranfrage:
 {user_input}
 
+Bisherige Unterhaltung:
+{history_block}
+
 Retrieved Context:
 {context_block}
 """.strip()
 
 
-def handle_turn(session_id: str, user_input: str, user_id: str | None = None) -> dict[str, Any]:
+def merge_citations(
+    model_citations: list[dict[str, Any]],
+    retrieved_chunks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    for citation in model_citations:
+        key = (citation["source"], citation["chunk_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(citation)
+
+    for chunk in retrieved_chunks[:5]:
+        citation = {
+            "source": chunk["source"],
+            "chunk_id": chunk["chunk_id"],
+            "title": chunk.get("title"),
+            "locator": f"p. {chunk['page']}" if chunk.get("page") is not None else None,
+        }
+        key = (citation["source"], citation["chunk_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(citation)
+
+    return merged
+
+
+def handle_turn(
+    session_id: str,
+    user_input: str,
+    user_id: str | None = None,
+    *,
+    collection_name: str = "default",
+    chat_history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
     """
     Main orchestration entrypoint.
 
@@ -79,22 +167,23 @@ def handle_turn(session_id: str, user_input: str, user_id: str | None = None) ->
     9. persist turn + artefacts
     10. return schema-valid payload
     """
+    init_db()
     create_session(session_id)
 
     session_ctx = build_session_ctx(session_id)
-    user_profile = build_user_profile(user_id)
 
     intent = classify_intent(user_input)
     distance = estimate_distance(user_input, intent)
 
-    retrieval = run_retrieval(user_input)
+    retrieval = run_retrieval(
+        query=user_input,
+        collection_name=collection_name,
+    )
     confidence = retrieval["confidence"]
 
-    role = route_role(
+    role = role_router(
         intent=intent,
         distance=distance,
-        retrieval_confidence=confidence,
-        user_profile=user_profile,
         session_ctx=session_ctx,
     )
 
@@ -113,6 +202,7 @@ def handle_turn(session_id: str, user_input: str, user_id: str | None = None) ->
         intent=intent,
         distance=distance,
         confidence=confidence,
+        chat_history=chat_history,
     )
 
     backend = OpenAIChatBackend()
@@ -120,23 +210,24 @@ def handle_turn(session_id: str, user_input: str, user_id: str | None = None) ->
 
     payload = client.generate_json(
         prompt,
-        fallback_role="TutoringAgent" if role == "TutoringAgent" else "MentorAgent",
-        fallback_state="ASSESS" if role == "TutoringAgent" else None,
+        fallback_role=role,
+        fallback_state=state,
         fallback_intent=intent,
         fallback_distance=distance,
         fallback_confidence=confidence,
         fallback_retrieval_count=len(retrieval["chunks"]),
     )
 
-    # Final hard validation
-    validated = AssistantPayload.model_validate(payload)
-    payload = validated.model_dump()
-
     # Ensure telemetry reflects actual orchestration values
     payload["telemetry"]["intent"] = intent
     payload["telemetry"]["distance"] = distance
     payload["telemetry"]["confidence"] = confidence
     payload["telemetry"]["retrieval_count"] = len(retrieval["chunks"])
+    payload["citations"] = merge_citations(payload["citations"], retrieval["chunks"])
+
+    # Final hard validation
+    validated = AssistantPayload.model_validate(payload)
+    payload = validated.model_dump()
 
     turn = TurnRecord(
         session_id=session_id,
@@ -168,7 +259,7 @@ def handle_turn(session_id: str, user_input: str, user_id: str | None = None) ->
         ]
         save_artefacts(
             artefacts=payload["artefacts"],
-            project="default",
+            project=collection_name,
             refs=refs,
         )
 
