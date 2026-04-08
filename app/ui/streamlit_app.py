@@ -1,9 +1,10 @@
+import uuid
+
 import streamlit as st
 
-from app.rag.ingest import split_pdf_file
-from app.rag.retriever import retrieve_and_rerank
 from app.backend.llm_client import get_client
-from app.prompts.prompts import SYSTEM_RULES, wrap_user_message
+from app.backend.orchestrator import handle_turn
+from app.rag.ingest import split_pdf_file
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
 from app.rag.storage import (
     list_collection_files,
@@ -25,6 +26,9 @@ if "chat_history" not in st.session_state:
 
 if "docs_indexed" not in st.session_state:
     st.session_state.docs_indexed = False
+
+if "session_id" not in st.session_state:
+    st.session_state.session_id = str(uuid.uuid4())
 
 # Sidebar: Model info
 with st.sidebar:
@@ -140,29 +144,64 @@ if st.button("Index now", type="primary", disabled=len(list_collection_files(COL
 
     st.success(f"Indexed {n} chunks")
 
-
-def _format_chat_history_for_messages(chat_history):
-    messages = []
+def _format_chat_history_for_backend(chat_history):
+    turns = []
     for turn in chat_history:
-        messages.append({"role": "user", "content": turn["user"]})
-        messages.append({"role": "assistant", "content": turn["bot"]})
-    return messages
+        payload = turn.get("payload", {})
+        turns.append(
+            {
+                "user": turn.get("user", ""),
+                "assistant": payload.get("assistant_message", ""),
+            }
+        )
+    return turns
 
 
-def ask_rag(question: str):
-    docs = retrieve_and_rerank("default", question, k_retrieve=30, k_final=5)
-    context = "\n\n".join(d.page_content for d in docs)
-
-    messages = [{"role": "system", "content": SYSTEM_RULES}]
-    messages += _format_chat_history_for_messages(st.session_state.chat_history)
-    messages.append({"role": "user", "content": wrap_user_message(context=context, question=question)})
-
-    client = get_client()
-    resp = client.chat.completions.create(
-        model=LANGUAGE_MODEL_NAME,
-        messages=messages,
+def ask_assistant(question: str):
+    return handle_turn(
+        session_id=st.session_state.session_id,
+        user_input=question,
+        collection_name=COLLECTION_ID,
+        chat_history=_format_chat_history_for_backend(st.session_state.chat_history),
     )
-    return resp.choices[0].message.content, docs
+
+
+def render_questions(questions):
+    if not questions:
+        return
+
+    st.markdown("**Follow-up questions**")
+    for question in questions:
+        label = question["label"]
+        options = question.get("options", [])
+        if options:
+            st.markdown(f"- {label} ({', '.join(options)})")
+        else:
+            st.markdown(f"- {label}")
+
+
+def render_artefacts(artefacts):
+    if not artefacts:
+        return
+
+    with st.expander("Artefacts"):
+        for artefact in artefacts:
+            st.markdown(f"**{artefact['title']}**")
+            st.caption(artefact["type"])
+            st.write(artefact["content"])
+
+
+def render_sources(citations):
+    with st.expander("Sources"):
+        if not citations:
+            st.caption("Keine Quellen verfügbar.")
+            return
+
+        for i, citation in enumerate(citations, 1):
+            title = citation.get("title") or citation["source"]
+            locator = citation.get("locator") or "ohne Seitenangabe"
+            st.markdown(f"**{i}. {title}**")
+            st.caption(f"{citation['source']} · {locator} · chunk {citation['chunk_id']}")
 
 
 # Chat
@@ -174,13 +213,13 @@ query = st.chat_input(
 if query:
     with st.spinner("Thinking..."):
         try:
-            response, retrieved_docs = ask_rag(query)
+            payload = ask_assistant(query)
         except Exception as e:
             st.error(f"Error: {e}")
             st.stop()
 
     st.session_state.chat_history.append(
-        {"user": query, "bot": response, "sources": retrieved_docs}
+        {"user": query, "payload": payload}
     )
 
 
@@ -188,11 +227,20 @@ if query:
 if st.session_state.chat_history:
     for turn in st.session_state.chat_history:
         st.chat_message("user").markdown(turn["user"])
-        st.chat_message("ai").markdown(turn["bot"])
+        payload = turn["payload"]
+        telemetry = payload.get("telemetry", {})
 
-        with st.expander("Sources"):
-            for i, doc in enumerate(turn["sources"], 1):
-                page = doc.metadata.get("page", "N/A")
-                source = doc.metadata.get("source", "Uploaded PDF")
-                st.markdown(f"**{i}. {source} (page {page})**")
-                st.caption(doc.page_content[:300] + "…")
+        with st.chat_message("assistant"):
+            st.markdown(payload["assistant_message"])
+
+            meta = [payload["role"]]
+            if payload.get("state"):
+                meta.append(payload["state"])
+            if "confidence" in telemetry:
+                meta.append(f"confidence={telemetry['confidence']:.2f}")
+            st.caption(" · ".join(meta))
+
+            render_questions(payload.get("questions", []))
+            render_artefacts(payload.get("artefacts", []))
+
+        render_sources(payload.get("citations", []))
