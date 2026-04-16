@@ -2,6 +2,7 @@ from typing import List, Tuple, Literal
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader
+# TODO: Use PyMuPDFLoader to support OCR and more formats in the future, but it has some issues with streamlit file-like objects currently. See
 
 from app.rag.tokenizer import get_tokenizer
 from app.rag.storage import save_upload, StoredFile
