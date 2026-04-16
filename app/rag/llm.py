@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from typing import Any
+
 from openai import OpenAI
 
 from app.infrastructure.config import API_KEY, BASE_URL, LANGUAGE_MODEL_NAME
+from app.infrastructure.tracing import maybe_wrap_openai, traceable
 
 
 class OpenAIChatBackend:
@@ -10,24 +13,30 @@ class OpenAIChatBackend:
         if not API_KEY:
             raise RuntimeError("Missing API key (SCADS_API_KEY / OPENAI_API_KEY).")
 
-        self.client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
+        self.client = maybe_wrap_openai(OpenAI(base_url=BASE_URL, api_key=API_KEY))
         self.model_name = model_name or LANGUAGE_MODEL_NAME
 
+    @traceable(name="openai_chat_generate", run_type="llm")
     def generate(
         self,
         prompt: str,
         *,
         system_prompt: str = "Return exactly the requested output.",
         temperature: float = 0.2,
+        response_format: dict[str, Any] | None = None,
     ) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model_name,
-            messages=[
+        request: dict[str, Any] = {
+            "model": self.model_name,
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": prompt},
             ],
-            temperature=temperature,
-        )
+            "temperature": temperature,
+        }
+        if response_format is not None:
+            request["response_format"] = response_format
+
+        response = self.client.chat.completions.create(**request)
 
         content = response.choices[0].message.content
         if not content:

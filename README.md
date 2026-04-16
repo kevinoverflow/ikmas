@@ -77,11 +77,20 @@ ermittelt, um den wahrgenommenen Mehrwert des IKMAS zu sichern.
 
 - Python 3.10+
 - Eine gesetzte API-Variable: `SCADS_API_KEY` (alternativ `OPENAI_API_KEY`)
+- Optional für Tracing/Debugging: `LANGSMITH_API_KEY`
 
 Beispiel:
 
 ```bash
 export SCADS_API_KEY="<dein_key>"
+```
+
+Optional für LangSmith:
+
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY="<dein_langsmith_key>"
+export LANGSMITH_PROJECT="ikmas"
 ```
 
 > Hinweis: `run.sh` fragt den Schlüssel interaktiv ab, falls er nicht gesetzt ist. In CI-/nicht-interaktiven Umgebungen sollte der Key daher **vorher** als Umgebungsvariable gesetzt werden.
@@ -102,6 +111,20 @@ pip install -r requirements.txt
 ```bash
 ./run.sh
 ```
+
+## Debugging mit LangSmith
+
+Der LLM-Pfad ist mit optionalem LangSmith-Tracing instrumentiert:
+
+- `handle_turn(...)`
+- `run_retrieval(...)`
+- `LLMClient.generate_json(...)`
+- `LLMClient.repair_json(...)`
+- `OpenAIChatBackend.generate(...)`
+
+Sobald `LANGSMITH_TRACING=true` und ein gültiger `LANGSMITH_API_KEY` gesetzt sind,
+werden diese Schritte als Traces an LangSmith gesendet. Ohne LangSmith-Konfiguration
+läuft die Anwendung unverändert weiter.
 
 ---
 

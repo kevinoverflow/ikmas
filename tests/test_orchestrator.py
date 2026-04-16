@@ -190,3 +190,20 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
     assert seen["project"] == "team-space"
     assert seen["artefacts"][0]["title"] == "Recap"
     assert seen["refs"] == [{"ref_type": "chunk", "ref_id": "chunk-7"}]
+
+
+def test_build_prompt_allows_general_knowledge_without_retrieval():
+    prompt = orchestrator.build_prompt(
+        user_input="Analysiere Bitcoin",
+        role="ConceptMiningAgent",
+        state=None,
+        retrieved_chunks=[],
+        intent="pattern_mining",
+        distance="SKM",
+        confidence=0.71,
+        chat_history=[],
+    )
+
+    assert "Wenn kein Retrieval-Kontext vorhanden ist" in prompt
+    assert "Analysiere Bitcoin" in prompt
+    assert '"role": "ConceptMiningAgent"' in prompt

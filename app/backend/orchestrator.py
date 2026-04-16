@@ -8,6 +8,7 @@ from app.backend.intent_distance import classify_intent, estimate_distance
 from app.backend.role_router import role_router
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
+from app.infrastructure.tracing import traceable
 from app.domain.schema import AssistantPayload
 from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts
 from app.backend.llm_client import LLMClient
@@ -39,6 +40,24 @@ def build_prompt(
     confidence: float,
     chat_history: list[dict[str, str]] | None = None,
 ) -> str:
+    schema_example = {
+        "role": role,
+        "state": state,
+        "assistant_message": "Kurze, direkte Antwort auf die Nutzeranfrage.",
+        "questions": [],
+        "artefacts": [],
+        "actions": [{"type": "none", "payload": {}}],
+        "citations": [],
+        "telemetry": {
+            "intent": intent,
+            "distance": distance,
+            "confidence": round(confidence, 3),
+            "retrieval_count": min(len(retrieved_chunks), 5),
+            "repair_used": False,
+            "fallback_used": False,
+        },
+    }
+
     context_lines: list[str] = []
     for i, chunk in enumerate(retrieved_chunks[:5], start=1):
         locator = f"p. {chunk['page']}" if chunk.get("page") is not None else "unknown"
@@ -88,7 +107,10 @@ Wichtige Regeln:
 - state muss {"null" if state is None else f'"{state}"'} sein.
 - assistant_message muss immer ein nicht-leerer String sein.
 - questions, artefacts, actions und citations müssen Arrays sein.
+- actions muss mindestens ein Objekt mit `type` und `payload` enthalten.
 - citations dürfen nur chunk_id-Werte aus dem Retrieved Context referenzieren.
+- Wenn kein Retrieval-Kontext vorhanden ist, beantworte die Anfrage trotzdem mit allgemeinem Wissen und lasse citations leer.
+- Wenn die Anfrage knapp ist, interpretiere sie sinnvoll statt reflexhaft nachzufragen.
 - telemetry muss diese Werte enthalten:
   - intent: "{intent}"
   - distance: "{distance}"
@@ -111,6 +133,9 @@ Bisherige Unterhaltung:
 
 Retrieved Context:
 {context_block}
+
+Beispiel für die Zielstruktur:
+{json.dumps(schema_example, ensure_ascii=False)}
 """.strip()
 
 
@@ -144,6 +169,7 @@ def merge_citations(
     return merged
 
 
+@traceable(name="handle_turn", run_type="chain")
 def handle_turn(
     session_id: str,
     user_input: str,

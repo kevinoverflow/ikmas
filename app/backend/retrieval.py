@@ -5,6 +5,7 @@ from typing import Any
 
 from langchain_core.documents import Document
 
+from app.infrastructure.tracing import traceable
 from app.rag.retriever import retrieve_and_rerank
 
 
@@ -67,6 +68,7 @@ def document_to_chunk(doc: Document, score: float) -> dict[str, Any]:
     }
 
 
+@traceable(name="run_retrieval", run_type="retriever")
 def run_retrieval(
     query: str,
     collection_name: str,
