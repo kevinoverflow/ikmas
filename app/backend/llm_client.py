@@ -5,6 +5,7 @@ from json import JSONDecodeError
 from typing import Any
 
 from app.domain.schema import AssistantPayload
+from app.domain.types import ALL_ROLE_NAMES
 from app.infrastructure.tracing import traceable
 from app.rag.llm import OpenAIChatBackend
 
@@ -192,12 +193,7 @@ class LLMClient:
         confidence: float,
         retrieval_count: int,
     ) -> dict[str, Any]:
-        valid_roles = {
-            "DigitalMemoryAgent",
-            "MentorAgent",
-            "TutoringAgent",
-            "ConceptMiningAgent",
-        }
+        valid_roles = set(ALL_ROLE_NAMES)
         valid_states = {"ASSESS", "EXPLAIN", "CHECK", "PRACTICE", "FEEDBACK", "SCHEDULE"}
         valid_question_types = {"single_choice", "multi_choice", "text"}
         valid_artefact_types = {"summary", "flashcards", "quiz", "checklist", "note", "concept_map"}
@@ -324,6 +320,7 @@ class LLMClient:
                 "repair_used": bool(telemetry.get("repair_used", False)),
                 "fallback_used": bool(telemetry.get("fallback_used", False)),
             },
+            "router_debug": None,
         }
 
     @staticmethod
@@ -357,6 +354,7 @@ class LLMClient:
                 "repair_used": True,
                 "fallback_used": False,
             },
+            "router_debug": None,
         }
         validated = AssistantPayload.model_validate(payload)
         return validated.model_dump()
@@ -418,6 +416,7 @@ class LLMClient:
                 "repair_used": False,
                 "fallback_used": True,
             },
+            "router_debug": None,
         }
 
         validated = AssistantPayload.model_validate(payload)

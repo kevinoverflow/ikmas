@@ -6,8 +6,8 @@ from app.domain.schema import AssistantPayload, Question
 
 def make_valid_payload():
     return {
-        "role": "TutoringAgent",
-        "state": "EXPLAIN",
+        "role": "MentorAgent",
+        "state": None,
         "assistant_message": "Here is the explanation.",
         "questions": [
             {
@@ -48,18 +48,31 @@ def make_valid_payload():
             "repair_used": False,
             "fallback_used": False,
         },
+        "router_debug": {
+            "role": "MentorAgent",
+            "knowledge_mode": "SOCIALIZATION",
+            "distance": "ESN",
+            "routing_confidence": "high",
+            "reason": "The user needs accessible explanation.",
+            "required_context": ["document excerpt"],
+            "verification_need": "none",
+            "next_state": "agent_execution",
+            "used_fallback": False,
+        },
     }
 
 
 def test_assistant_payload_accepts_valid_nested_schema():
     payload = AssistantPayload.model_validate(make_valid_payload())
 
-    assert payload.role == "TutoringAgent"
-    assert payload.state == "EXPLAIN"
+    assert payload.role == "MentorAgent"
+    assert payload.state is None
     assert payload.questions[0].options == ["A", "B"]
     assert payload.artefacts[0].concept_ids == [1, 2]
     assert payload.actions[0].payload["follow_up"] == "Tell me more"
     assert payload.telemetry.retrieval_count == 3
+    assert payload.router_debug is not None
+    assert payload.router_debug.role == "MentorAgent"
 
 
 def test_assistant_payload_rejects_extra_top_level_fields():

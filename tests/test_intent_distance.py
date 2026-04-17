@@ -1,6 +1,6 @@
 import pytest
 
-from app.backend.intent_distance import classify_intent, estimate_distance
+from app.backend.intent_distance import classify_intent, estimate_distance, infer_knowledge_mode
 
 
 @pytest.mark.parametrize(
@@ -28,6 +28,10 @@ def test_estimate_distance_returns_swp_for_project_context():
     assert estimate_distance("Wie ist das in unserem Projekt umgesetzt?", "project_specific") == "SWP"
 
 
+def test_estimate_distance_returns_swp_for_project_specific_intent_without_exact_phrase():
+    assert estimate_distance("Erstelle aus unserer Doku eine Notiz", "project_specific") == "SWP"
+
+
 def test_estimate_distance_returns_swpr_for_cross_context():
     assert estimate_distance("Wie machen andere Teams das?", "cross_context") == "SWPr"
 
@@ -37,4 +41,22 @@ def test_estimate_distance_returns_skm_for_pattern_mining():
 
 
 def test_estimate_distance_falls_back_to_esn():
-    assert estimate_distance("Ganz allgemeine Frage", "project_specific") == "ESN"
+    assert estimate_distance("Ganz allgemeine Frage", "cross_context") == "ESN"
+
+
+@pytest.mark.parametrize(
+    ("user_input", "intent", "distance", "expected"),
+    [
+        ("Mach ein Quiz mit mir", "learn_mode", "ESN", "INTERNALIZATION"),
+        ("Bitte vergleiche die Dokumente und fasse sie zusammen", "what_is", "ESN", "COMBINATION"),
+        ("Hilf mir, die Frage sauber zu formulieren", "what_is", "ESN", "EXTERNALIZATION"),
+        ("Erklär mir das bitte einfach", "simplify", "ESN", "SOCIALIZATION"),
+        ("Analysiere Muster und finde Konzepte", "pattern_mining", "SKM", "COMBINATION"),
+        ("Gib mir neue Ideen aus den Quellen", "pattern_mining", "SKM", "INTERNALIZATION"),
+        ("Ich war länger raus, hol mich wieder in den Projektkontext rein", "project_specific", "SWP", "INTERNALIZATION"),
+        ("Erstelle aus unserer Doku eine kurze Notiz", "project_specific", "SWP", "EXTERNALIZATION"),
+        ("Verbinde unsere Dateien und zeig mir die Zusammenhänge", "project_specific", "SWP", "COMBINATION"),
+    ],
+)
+def test_infer_knowledge_mode_routes_to_expected_mode(user_input, intent, distance, expected):
+    assert infer_knowledge_mode(user_input, intent, distance) == expected

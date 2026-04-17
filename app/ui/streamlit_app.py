@@ -204,6 +204,33 @@ def render_sources(citations):
             st.caption(f"{citation['source']} · {locator} · chunk {citation['chunk_id']}")
 
 
+def render_router_debug(router_debug):
+    if not router_debug:
+        return
+
+    with st.expander("Router Debug"):
+        st.caption(
+            " · ".join(
+                [
+                    router_debug["role"],
+                    router_debug["knowledge_mode"],
+                    router_debug["distance"],
+                    f"confidence={router_debug['routing_confidence']}",
+                    "fallback" if router_debug["used_fallback"] else "agent",
+                ]
+            )
+        )
+        st.markdown(f"**Reason:** {router_debug['reason']}")
+        st.markdown(f"**Verification need:** {router_debug['verification_need']}")
+        st.markdown(f"**Next state:** {router_debug['next_state']}")
+
+        required_context = router_debug.get("required_context", [])
+        if required_context:
+            st.markdown("**Required context**")
+            for item in required_context:
+                st.markdown(f"- {item}")
+
+
 # Chat
 st.markdown("---")
 query = st.chat_input(
@@ -242,5 +269,6 @@ if st.session_state.chat_history:
 
             render_questions(payload.get("questions", []))
             render_artefacts(payload.get("artefacts", []))
+            render_router_debug(payload.get("router_debug"))
 
         render_sources(payload.get("citations", []))

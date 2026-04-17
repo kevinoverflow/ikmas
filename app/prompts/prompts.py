@@ -1,3 +1,9 @@
+from app.domain.types import RoleName
+from app.prompts.context_reconstructor_agent import PROMPT as CONTEXT_RECONSTRUCTOR_AGENT_PROMPT
+from app.prompts.mentor_agent import PROMPT as MENTOR_AGENT_PROMPT
+from app.prompts.scribe_agent import PROMPT as SCRIBE_AGENT_PROMPT
+from app.prompts.semantic_linking_agent import PROMPT as SEMANTIC_LINKING_AGENT_PROMPT
+
 SYSTEM_RULES = """You are a helpful assistant.
 
 You may use:
@@ -20,3 +26,15 @@ def wrap_user_message(context: str, question: str) -> str:
 Question:
 {question}
 """
+
+
+ROLE_PROMPTS: dict[RoleName, str] = {
+    "ContextReconstructorAgent": CONTEXT_RECONSTRUCTOR_AGENT_PROMPT,
+    "MentorAgent": MENTOR_AGENT_PROMPT,
+    "ScribeAgent": SCRIBE_AGENT_PROMPT,
+    "SemanticLinkingAgent": SEMANTIC_LINKING_AGENT_PROMPT,
+}
+
+
+def get_role_prompt(role: RoleName) -> str:
+    return ROLE_PROMPTS[role]

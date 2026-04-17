@@ -8,8 +8,8 @@ from app.backend.validation import fallback_payload, parse_and_validate_json, va
 
 def make_valid_payload():
     return {
-        "role": "TutoringAgent",
-        "state": "CHECK",
+        "role": "MentorAgent",
+        "state": None,
         "assistant_message": "Antwort",
         "questions": [
             {
@@ -29,12 +29,23 @@ def make_valid_payload():
         ],
         "citations": [],
         "telemetry": {
-            "intent": "learn_mode",
+            "intent": "what_is",
             "distance": "ESN",
             "confidence": 0.75,
             "retrieval_count": 1,
             "repair_used": False,
             "fallback_used": False,
+        },
+        "router_debug": {
+            "role": "MentorAgent",
+            "knowledge_mode": "SOCIALIZATION",
+            "distance": "ESN",
+            "routing_confidence": "high",
+            "reason": "The user asks for explanation.",
+            "required_context": [],
+            "verification_need": "none",
+            "next_state": "agent_execution",
+            "used_fallback": False,
         },
     }
 
@@ -42,9 +53,9 @@ def make_valid_payload():
 def test_validate_payload_returns_assistant_payload_model():
     payload = validate_payload(make_valid_payload())
 
-    assert payload.role == "TutoringAgent"
-    assert payload.state == "CHECK"
-    assert payload.telemetry.intent == "learn_mode"
+    assert payload.role == "MentorAgent"
+    assert payload.state is None
+    assert payload.telemetry.intent == "what_is"
 
 
 def test_validate_payload_raises_for_schema_mismatch():

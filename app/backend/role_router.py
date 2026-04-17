@@ -1,25 +1,20 @@
 from __future__ import annotations
-from app.domain.types import Distance, Intent, RoleName
+
+from app.domain.types import Distance, Intent, KnowledgeMode, RoleName
+
+ROLE_MATRIX: dict[tuple[Distance, KnowledgeMode], RoleName] = {
+    ("SWP", "EXTERNALIZATION"): "ScribeAgent",
+    ("SWP", "COMBINATION"): "SemanticLinkingAgent",
+    ("ESN", "SOCIALIZATION"): "MentorAgent",
+    ("ESN", "INTERNALIZATION"): "MentorAgent",
+    ("SKM", "COMBINATION"): "ContextReconstructorAgent",
+    ("SKM", "INTERNALIZATION"): "ContextReconstructorAgent",
+}
 
 def role_router(
         intent: Intent,
         distance: Distance,
+        knowledge_mode: KnowledgeMode,
         session_ctx: dict,
 ) -> RoleName:
-    force_tutor = bool(session_ctx.get("force_tutor_mode")) or intent == "learn_mode"
-
-    if force_tutor:
-        return "TutoringAgent"
-
-    if distance == "SWP":
-        return "DigitalMemoryAgent"
-    if distance == "SKM":
-        return "ConceptMiningAgent"
-    if distance == "ESN":
-        if intent in {"simplify", "what_is"}:
-            return "MentorAgent"
-        return "TutoringAgent"
-    if distance == "SWPr":
-        return "MentorAgent"
-
-    return "MentorAgent"
+    return ROLE_MATRIX.get((distance, knowledge_mode), "MentorAgent")

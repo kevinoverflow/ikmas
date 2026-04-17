@@ -1,6 +1,8 @@
 import json
+from types import SimpleNamespace
 
 from app.backend import orchestrator
+from app.prompts.prompts import get_role_prompt
 
 
 def make_valid_payload(
@@ -63,9 +65,19 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
             "confidence": 0.88,
         }
 
-    def fake_role_router(intent, distance, session_ctx):
-        seen["role_router_args"] = (intent, distance, session_ctx)
-        return "MentorAgent"
+    def fake_route_with_agent(backend, *, user_input, chat_history=None, session_ctx=None):
+        seen["route_args"] = (backend, user_input, chat_history, session_ctx)
+        return SimpleNamespace(
+            role="MentorAgent",
+            knowledge_mode="SOCIALIZATION",
+            distance="ESN",
+            routing_confidence="high",
+            reason="novice explanation",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+        )
 
     def fake_decide_state(role, retrieval_confidence, session_ctx, force_tutor_mode=False):
         seen["state_args"] = (role, retrieval_confidence, session_ctx, force_tutor_mode)
@@ -89,7 +101,7 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
     monkeypatch.setattr(orchestrator, "init_db", fake_init_db)
     monkeypatch.setattr(orchestrator, "create_session", fake_create_session)
     monkeypatch.setattr(orchestrator, "run_retrieval", fake_run_retrieval)
-    monkeypatch.setattr(orchestrator, "role_router", fake_role_router)
+    monkeypatch.setattr(orchestrator, "route_with_agent", fake_route_with_agent)
     monkeypatch.setattr(orchestrator, "decide_state", fake_decide_state)
     monkeypatch.setattr(orchestrator, "OpenAIChatBackend", FakeBackend)
     monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
@@ -105,11 +117,17 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
     assert seen["init_db"] == 1
     assert seen["session_id"] == "session-123"
     assert seen["retrieval_args"] == ("Erkläre bitte Retrieval", "project-a", 30, 8)
-    assert seen["role_router_args"] == ("what_is", "ESN", {})
+    assert seen["route_args"][1:] == ("Erkläre bitte Retrieval", [{"user": "Hallo", "assistant": "Hi"}], {})
     assert seen["state_args"] == ("MentorAgent", 0.88, {}, False)
     assert seen["fallback_kwargs"]["fallback_role"] == "MentorAgent"
     assert seen["fallback_kwargs"]["fallback_state"] is None
     assert "Nutzer: Hallo" in seen["prompt"]
+    assert "knowledge_mode: SOCIALIZATION" in seen["prompt"]
+    assert "Rollenanweisung:" in seen["prompt"]
+    assert get_role_prompt("MentorAgent") in seen["prompt"]
+    assert payload["router_debug"]["role"] == "MentorAgent"
+    assert payload["router_debug"]["knowledge_mode"] == "SOCIALIZATION"
+    assert payload["router_debug"]["used_fallback"] is False
     assert payload["telemetry"]["confidence"] == 0.88
     assert payload["telemetry"]["retrieval_count"] == 1
     assert payload["citations"] == [
@@ -150,7 +168,21 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
             "confidence": 0.5,
         },
     )
-    monkeypatch.setattr(orchestrator, "role_router", lambda *args, **kwargs: "DigitalMemoryAgent")
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="ContextReconstructorAgent",
+            knowledge_mode="INTERNALIZATION",
+            distance="SKM",
+            routing_confidence="high",
+            reason="missing context",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+        ),
+    )
     monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
     monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda: object())
     monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
@@ -161,7 +193,7 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
 
         def generate_json(self, prompt, **kwargs):
             return make_valid_payload(
-                role="DigitalMemoryAgent",
+                role="ContextReconstructorAgent",
                 artefacts=[
                     {
                         "type": "summary",
@@ -195,15 +227,19 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
 def test_build_prompt_allows_general_knowledge_without_retrieval():
     prompt = orchestrator.build_prompt(
         user_input="Analysiere Bitcoin",
-        role="ConceptMiningAgent",
+        role="SemanticLinkingAgent",
+        role_instructions="Synthesize and connect explicit project artefacts across files and themes.",
         state=None,
         retrieved_chunks=[],
         intent="pattern_mining",
-        distance="SKM",
+        distance="SWP",
+        knowledge_mode="COMBINATION",
         confidence=0.71,
         chat_history=[],
     )
 
     assert "Wenn kein Retrieval-Kontext vorhanden ist" in prompt
     assert "Analysiere Bitcoin" in prompt
-    assert '"role": "ConceptMiningAgent"' in prompt
+    assert '"role": "SemanticLinkingAgent"' in prompt
+    assert "knowledge_mode: COMBINATION" in prompt
+    assert "Synthesize and connect explicit project artefacts across files and themes." in prompt

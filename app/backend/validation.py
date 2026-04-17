@@ -30,9 +30,9 @@ def parse_and_validate_json(raw_text: str) -> AssistantPayload:
 
 
 def fallback_payload(
-    role: str = "TutoringAgent",
-    state: str | None = "ASSESS",
-    intent: str = "learn_mode",
+    role: str = "MentorAgent",
+    state: str | None = None,
+    intent: str = "what_is",
     distance: str = "ESN",
     confidence: float = 0.0,
 ) -> dict[str, Any]:

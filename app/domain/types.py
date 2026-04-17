@@ -13,9 +13,7 @@ These types act as a lightweight contract between orchestrator, retrieval,
 FSM, storage, and UI layers.
 """
 from dataclasses import dataclass, field
-from typing import Any, Literal
-
-from typing import TypedDict, List, Any
+from typing import Any, Literal, TypedDict
 
 Intent = Literal[
     "what_is",
@@ -28,12 +26,26 @@ Intent = Literal[
 
 Distance = Literal["ESN", "SWP", "SWPr", "SKM"]
 
-RoleName = Literal[
-    "DigitalMemoryAgent",
-    "MentorAgent",
-    "TutoringAgent",
-    "ConceptMiningAgent",
+KnowledgeMode = Literal[
+    "SOCIALIZATION",
+    "EXTERNALIZATION",
+    "COMBINATION",
+    "INTERNALIZATION",
 ]
+
+RoleName = Literal[
+    "ScribeAgent",
+    "SemanticLinkingAgent",
+    "MentorAgent",
+    "ContextReconstructorAgent",
+]
+
+ALL_ROLE_NAMES: tuple[str, ...] = (
+    "ScribeAgent",
+    "SemanticLinkingAgent",
+    "MentorAgent",
+    "ContextReconstructorAgent",
+)
 
 TutorState = Literal[
     "ASSESS",
@@ -80,4 +92,4 @@ class TurnRecord:
 class ChatTurn(TypedDict):
     user: str
     bot: str
-    sources: List[Any]  # später: besser typisieren (Document)
+    sources: list[Any]  # später: besser typisieren (Document)

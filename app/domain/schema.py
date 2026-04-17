@@ -45,6 +45,20 @@ class Telemetry(BaseModel):
     repair_used: bool
     fallback_used: bool
 
+
+class RouterDebug(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    role: RoleName
+    knowledge_mode: str
+    distance: str
+    routing_confidence: str
+    reason: str
+    required_context: list[str] = Field(default_factory=list)
+    verification_need: str
+    next_state: str
+    used_fallback: bool
+
+
 class AssistantPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     role: RoleName
@@ -55,3 +69,21 @@ class AssistantPayload(BaseModel):
     actions: list[Action]
     citations: list[Citation]
     telemetry: Telemetry
+    router_debug: RouterDebug | None = None
+
+
+class RouterPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    seci_mode: Literal["Socialization", "Externalization", "Combination", "Internalization"]
+    reuse_situation: Literal[
+        "Shared Work Producer",
+        "Shared Work Practitioner",
+        "Expertise-Seeking Novice",
+        "Secondary Knowledge Miner",
+    ]
+    selected_agent: RoleName
+    routing_confidence: Literal["low", "medium", "high"]
+    reason: str
+    required_context: list[str] = Field(default_factory=list)
+    verification_need: str
+    next_state: str

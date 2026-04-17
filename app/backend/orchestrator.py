@@ -4,14 +4,15 @@ import json
 from typing import Any
 
 from app.domain.types import TurnRecord
-from app.backend.intent_distance import classify_intent, estimate_distance
-from app.backend.role_router import role_router
+from app.backend.intent_distance import classify_intent
+from app.backend.router_agent import route_with_agent
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
 from app.infrastructure.tracing import traceable
 from app.domain.schema import AssistantPayload
 from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts
 from app.backend.llm_client import LLMClient
+from app.prompts.prompts import get_role_prompt
 from app.rag.llm import OpenAIChatBackend
 
 
@@ -33,10 +34,12 @@ def build_user_profile(user_id: str | None) -> dict[str, Any]:
 def build_prompt(
     user_input: str,
     role: str,
+    role_instructions: str,
     state: str | None,
     retrieved_chunks: list[dict[str, Any]],
     intent: str,
     distance: str,
+    knowledge_mode: str,
     confidence: float,
     chat_history: list[dict[str, str]] | None = None,
 ) -> str:
@@ -122,8 +125,12 @@ Wichtige Regeln:
 Kontext:
 - intent: {intent}
 - distance: {distance}
+- knowledge_mode: {knowledge_mode}
 - confidence: {confidence:.3f}
 - state: {state}
+
+Rollenanweisung:
+{role_instructions}
 
 Nutzeranfrage:
 {user_input}
@@ -199,7 +206,16 @@ def handle_turn(
     session_ctx = build_session_ctx(session_id)
 
     intent = classify_intent(user_input)
-    distance = estimate_distance(user_input, intent)
+
+    backend = OpenAIChatBackend()
+    route = route_with_agent(
+        backend,
+        user_input=user_input,
+        chat_history=chat_history,
+        session_ctx=session_ctx,
+    )
+    distance = route.distance
+    knowledge_mode = route.knowledge_mode
 
     retrieval = run_retrieval(
         query=user_input,
@@ -207,31 +223,29 @@ def handle_turn(
     )
     confidence = retrieval["confidence"]
 
-    role = role_router(
-        intent=intent,
-        distance=distance,
-        session_ctx=session_ctx,
-    )
+    role = route.role
+    role_instructions = get_role_prompt(role)
 
     state = decide_state(
         role=role,
         retrieval_confidence=confidence,
         session_ctx=session_ctx,
-        force_tutor_mode=(intent == "learn_mode"),
+        force_tutor_mode=False,
     )
 
     prompt = build_prompt(
         user_input=user_input,
         role=role,
+        role_instructions=role_instructions,
         state=state,
         retrieved_chunks=retrieval["chunks"],
         intent=intent,
         distance=distance,
+        knowledge_mode=knowledge_mode,
         confidence=confidence,
         chat_history=chat_history,
     )
 
-    backend = OpenAIChatBackend()
     client = LLMClient(backend)
 
     payload = client.generate_json(
@@ -249,6 +263,17 @@ def handle_turn(
     payload["telemetry"]["distance"] = distance
     payload["telemetry"]["confidence"] = confidence
     payload["telemetry"]["retrieval_count"] = len(retrieval["chunks"])
+    payload["router_debug"] = {
+        "role": route.role,
+        "knowledge_mode": route.knowledge_mode,
+        "distance": route.distance,
+        "routing_confidence": route.routing_confidence,
+        "reason": route.reason,
+        "required_context": route.required_context,
+        "verification_need": route.verification_need,
+        "next_state": route.next_state,
+        "used_fallback": route.used_fallback,
+    }
     payload["citations"] = merge_citations(payload["citations"], retrieval["chunks"])
 
     # Final hard validation
