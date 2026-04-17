@@ -1,14 +1,24 @@
+# System Flow
+
+Related docs:
+
+- [IKMAS Overview](./IKMAS.md)
+- [Architecture](./architecture.md)
+- [Orchestrator](./orchestrator.md)
+- [Router Agent](./router_agent.md)
+
+```
 User Input
 ↓
 Intent
 ↓
-Distance (Markus)
+Router Agent
 ↓
-Role
+Route Decision
 ↓
 Retrieval + Confidence
 ↓
-FSM (if Tutor)
+Prompt Construction
 ↓
 LLM (JSON only)
 ↓
@@ -17,3 +27,6 @@ Validation
 SQLite Log
 ↓
 UI
+```
+
+The UI also exposes router telemetry via `router_debug`.

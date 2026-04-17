@@ -1,5 +1,12 @@
 # Assistant JSON Schema (Backend Contract)
 
+Related docs:
+
+- [IKMAS Overview](./IKMAS.md)
+- [Orchestrator](./orchestrator.md)
+- [Router Agent](./router_agent.md)
+- [LLM](./llm.md)
+
 This document describes the structured JSON contract used between the LLM, backend, and UI.
 
 All responses must conform to this schema. No additional fields are allowed.
@@ -30,7 +37,8 @@ Instead, every response is a structured JSON object that is:
   "artefacts": [...],
   "actions": [...],
   "citations": [...],
-  "telemetry": {...}
+  "telemetry": {...},
+  "router_debug": {...} | null
 }
 ```
 
@@ -44,16 +52,18 @@ Defines the active system role.
 
 Possible values:
 
-- `DigitalMemoryAgent`
+- `ScribeAgent`
+- `SemanticLinkingAgent`
 - `MentorAgent`
-- `TutoringAgent`
-- `ConceptMiningAgent`
+- `ContextReconstructorAgent`
 
 ---
 
 ### state
 
-Used only for tutoring (FSM).
+Currently optional and usually `null`.
+
+The FSM still exists in code, but the current active routed role set does not depend on it.
 
 Possible values:
 
@@ -219,6 +229,40 @@ Field meanings:
 
 ---
 
+### router_debug
+
+Optional routing debug information attached by the orchestrator.
+
+Example:
+
+```
+{
+  "role":"ContextReconstructorAgent",
+  "knowledge_mode":"INTERNALIZATION",
+  "distance":"SKM",
+  "routing_confidence":"high",
+  "reason":"The user needs missing context restored to continue work in a literature review.",
+  "required_context":["relevant papers","previous summaries"],
+  "verification_need":"user confirmation of relevance",
+  "next_state":"agent_execution",
+  "used_fallback":false
+}
+```
+
+Field meanings:
+
+- `role`: routed agent
+- `knowledge_mode`: routed knowledge mode
+- `distance`: routed reuse distance
+- `routing_confidence`: router confidence
+- `reason`: human-readable routing explanation
+- `required_context`: context the router expects
+- `verification_need`: expected user validation need
+- `next_state`: next execution state
+- `used_fallback`: whether heuristic fallback was used
+
+---
+
 ## Validation Rules
 
 - All top-level fields are required.
@@ -239,7 +283,7 @@ This schema enables:
 - structured UI rendering
 - persistent logging in SQLite
 - role-based behavior
-- tutoring workflows via FSM
+- router transparency via `router_debug`
 - traceable retrieval through citations
 
 ---

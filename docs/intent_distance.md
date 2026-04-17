@@ -1,5 +1,13 @@
 # Intent & Distance Classification (Iteration 1)
 
+Related docs:
+
+- [IKMAS Overview](./IKMAS.md)
+- [Architecture](./architecture.md)
+- [Router Agent](./router_agent.md)
+- [Roles](./roles.md)
+- [Orchestrator](./orchestrator.md)
+
 This document defines the rule-based classification used to map user input to:
 
 - **Intent** (what the user wants)
@@ -19,6 +27,10 @@ User Input
 Intent Classification (keywords)
     ↓
 Distance Estimation (rules)
+    ↓
+Knowledge Mode Inference
+    ↓
+Heuristic Fallback Router
 ```
 
 ---
@@ -98,6 +110,7 @@ Triggered when the user refers to their own project or internal context.
 
 - „Wie haben wir das im Projekt gelöst?“
 - „Was steht in unserer Doku dazu?“
+- „Erstelle aus unserer Doku eine Notiz“
 
 ---
 
@@ -199,6 +212,7 @@ User compares with peers in similar roles.
 Triggered when:
 
 - intent = pattern_mining
+- literature / paper / review context markers are present
 
 **Meaning:**
 
@@ -244,3 +258,14 @@ ESN
 - No multi-intent handling
 - Sensitive to exact wording
 - No context awareness across turns
+
+---
+
+## Current Note
+
+The active system now uses:
+
+- an [LLM Router Agent](./router_agent.md) as the primary router
+- these rules as deterministic fallback behavior
+
+So this document describes the fallback layer, not the entire routing stack.

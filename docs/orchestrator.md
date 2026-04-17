@@ -1,5 +1,14 @@
 # Orchestrator
 
+Related docs:
+
+- [IKMAS Overview](./IKMAS.md)
+- [Architecture](./architecture.md)
+- [Router Agent](./router_agent.md)
+- [Roles](./roles.md)
+- [Retrieval](./retrieval.md)
+- [Schema](./schema.md)
+
 ## Overview
 
 The orchestrator is the **central control unit** of the system.
@@ -21,13 +30,13 @@ User Input
    ↓
 Orchestrator
    ↓
-(Intent + Distance)
+(Intent)
+   ↓
+Router Agent
+   ↓
+Route Decision
    ↓
 Retrieval + Confidence
-   ↓
-Role Routing
-   ↓
-FSM (Tutoring only)
    ↓
 Prompt Construction
    ↓
@@ -97,18 +106,22 @@ Examples:
 
 ---
 
-### 4. Knowledge Distance
+### 4. Router Agent
 
 ```
-distance=estimate_distance(user_input,intent)
+route=route_with_agent(...)
 ```
 
-Types:
+The router classifies:
 
-- `ESN` → simple explanation
-- `SWP` → project-specific
-- `SWPr` → cross-context
-- `SKM` → pattern mining
+- `seci_mode`
+- `reuse_situation`
+- `selected_agent`
+- `routing_confidence`
+- `reason`
+- `required_context`
+- `verification_need`
+- `next_state`
 
 ---
 
@@ -130,15 +143,15 @@ Retrieval returns:
 ### 6. Role Routing
 
 ```
-role=route_role(...)
+role=route.role
 ```
 
-Maps context → agent role:
+Current active roles:
 
+- `ScribeAgent`
+- `SemanticLinkingAgent`
 - `MentorAgent`
-- `TutoringAgent`
-- `DigitalMemoryAgent`
-- `ConceptMiningAgent`
+- `ContextReconstructorAgent`
 
 ---
 
@@ -148,10 +161,7 @@ Maps context → agent role:
 state=decide_state(...)
 ```
 
-Only active for:
-
-- `TutoringAgent`
-- or explicit learning mode
+Currently not used by the active router role set.
 
 States:
 
@@ -176,6 +186,7 @@ Includes:
 - state
 - intent
 - distance
+- knowledge mode
 - confidence
 - retrieved context
 
@@ -218,6 +229,21 @@ payload["telemetry"]["confidence"]=confidence
 ```
 
 Adds orchestration metadata.
+
+The orchestrator also adds:
+
+```
+payload["router_debug"]={...}
+```
+
+This includes:
+
+- routed role
+- knowledge mode
+- distance
+- routing confidence
+- routing reason
+- fallback usage
 
 ---
 
