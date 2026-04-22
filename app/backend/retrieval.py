@@ -72,8 +72,8 @@ def document_to_chunk(doc: Document, score: float) -> dict[str, Any]:
 def run_retrieval(
     query: str,
     collection_name: str,
-    k_retrieve: int = 30,
-    k_final: int = 8,
+    k_retrieve: int = 10,
+    k_final: int = 5,
 ) -> dict[str, Any]:
     ranked_docs = retrieve_and_rerank(
         collection_name=collection_name,
