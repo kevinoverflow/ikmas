@@ -39,6 +39,8 @@ def clear_collection(collection_name: str) -> None:
     Clears all docs in a collection (simple & safe).
     """
     vs = get_chroma(collection_name)
-    # langchain Chroma exposes underlying collection; delete all
-    vs._collection.delete(where={})
+    # Get all document IDs and delete them
+    all_ids = vs._collection.get()["ids"]
+    if all_ids:
+        vs._collection.delete(ids=all_ids)
     vs.persist()
