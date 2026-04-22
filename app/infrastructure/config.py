@@ -4,7 +4,7 @@ from pathlib import Path
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://llm.scads.ai/v1")
 API_KEY = os.getenv("SCADS_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-LANGUAGE_MODEL_NAME = os.getenv("LANGUAGE_MODEL_NAME", "moonshot-v1-128k")
+LANGUAGE_MODEL_NAME = os.getenv("LANGUAGE_MODEL_NAME", "moonshotai/Kimi-K2.5")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 TOP_K = int(os.getenv("TOP_K", "5"))
