@@ -13,7 +13,15 @@ class OpenAIChatBackend:
         if not API_KEY:
             raise RuntimeError("Missing API key (SCADS_API_KEY / OPENAI_API_KEY).")
 
-        self.client = maybe_wrap_openai(OpenAI(base_url=BASE_URL, api_key=API_KEY))
+        # Check if using Moonshot AI
+        if LANGUAGE_MODEL_NAME.startswith("kimi") or LANGUAGE_MODEL_NAME.startswith("moonshot"):
+            # Moonshot AI requires specific base URL and API key format
+            base_url = "https://api.moonshot.cn/v1"
+            self.client = maybe_wrap_openai(OpenAI(base_url=base_url, api_key=API_KEY))
+        else:
+            # Default OpenAI-compatible API
+            self.client = maybe_wrap_openai(OpenAI(base_url=BASE_URL, api_key=API_KEY))
+            
         self.model_name = model_name or LANGUAGE_MODEL_NAME
 
     @traceable(name="openai_chat_generate", run_type="llm")
