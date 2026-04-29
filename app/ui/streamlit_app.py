@@ -4,7 +4,7 @@ import streamlit as st
 
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
-from app.rag.ingest import split_pdf_file
+from app.rag.ingest import split_file, split_documents
 from app.infrastructure.config import LANGUAGE_MODEL_NAME
 from app.rag.storage import (
     list_collection_files,
@@ -137,7 +137,7 @@ if st.button("Index now", type="primary", disabled=len(list_collection_files(COL
 
         docs = []
         for stored in list_collection_files(COLLECTION_ID):
-            docs.extend(split_pdf_file(stored))
+            docs.extend(split_documents(split_file(stored)))
 
         n = add_docs(COLLECTION_ID, docs)
         st.session_state.docs_indexed = True

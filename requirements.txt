@@ -10,3 +10,6 @@ pypdf
 chromadb
 pytest
 transformers
+opencv-python
+pytesseract
+PyMuPDF

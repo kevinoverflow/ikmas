@@ -76,6 +76,14 @@ class RetrievalResult:
     coverage: float
     confidence: float
 
+@dataclass(frozen=True)
+class ImageTextResult:
+    text: str
+    chunk_type: Literal["ocr_text", "image_description"]
+    processor: Literal["ocr", "vision"]
+    confidence: float | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
 @dataclass
 class TurnRecord:
     session_id:str
