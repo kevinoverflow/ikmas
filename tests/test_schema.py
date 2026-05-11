@@ -52,6 +52,8 @@ def make_valid_payload():
             "role": "MentorAgent",
             "knowledge_mode": "SOCIALIZATION",
             "distance": "ESN",
+            "model_name": "Qwen/Qwen3-Coder-30B-A3B-Instruct",
+            "model_reason": "Chosen from MENTOR_MODEL_NAME because the selected role explains expert knowledge for a novice audience.",
             "routing_confidence": "high",
             "reason": "The user needs accessible explanation.",
             "required_context": ["document excerpt"],

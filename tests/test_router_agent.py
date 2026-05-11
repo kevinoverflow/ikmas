@@ -37,6 +37,8 @@ def test_route_with_agent_uses_llm_router_output():
     assert decision.knowledge_mode == "EXTERNALIZATION"
     assert decision.distance == "SWP"
     assert decision.used_fallback is False
+    assert decision.model_selection["model_name"]
+    assert "SCRIBE_MODEL_NAME" in decision.model_selection["reason"]
 
 
 def test_route_with_agent_accepts_numeric_confidence_and_scalar_context_fields():
@@ -70,6 +72,36 @@ def test_route_with_agent_accepts_numeric_confidence_and_scalar_context_fields()
     assert decision.used_fallback is False
 
 
+def test_route_with_agent_ignores_router_model_selection_field():
+    class FakeBackend:
+        def generate(self, prompt, **kwargs):
+            return """{
+              "seci_mode": "Combination",
+              "reuse_situation": "Secondary Knowledge Miner",
+              "selected_agent": "ContextReconstructorAgent",
+              "routing_confidence": "high",
+              "reason": "The user wants to reuse an artifact from another context.",
+              "required_context": [],
+              "verification_need": "none",
+              "next_state": "agent_execution",
+              "model_selection": {
+                "model_name": "not-a-real-agent-model",
+                "temperature": 0.9
+              }
+            }"""
+
+    decision = route_with_agent(
+        FakeBackend(),
+        user_input="Can I reuse this old policy for a different department?",
+        chat_history=[],
+        session_ctx={},
+    )
+
+    assert decision.role == "ContextReconstructorAgent"
+    assert decision.used_fallback is False
+    assert decision.model_selection["model_name"] != "not-a-real-agent-model"
+
+
 def test_route_with_agent_falls_back_to_heuristics_on_invalid_router_output():
     class FakeBackend:
         def generate(self, prompt, **kwargs):
@@ -84,3 +116,5 @@ def test_route_with_agent_falls_back_to_heuristics_on_invalid_router_output():
 
     assert decision.role == "MentorAgent"
     assert decision.used_fallback is True
+    assert decision.model_selection["model_name"]
+    assert "MENTOR_MODEL_NAME" in decision.model_selection["reason"]

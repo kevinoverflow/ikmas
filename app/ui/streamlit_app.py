@@ -4,8 +4,9 @@ import streamlit as st
 
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
+from app.backend.router_agent import model_selection_for_role
 from app.rag.ingest import split_file, split_documents
-from app.infrastructure.config import LANGUAGE_MODEL_NAME
+from app.infrastructure.config import LLM_MODEL_NAME
 from app.rag.storage import (
     list_collection_files,
     save_upload,
@@ -39,7 +40,7 @@ with st.sidebar:
         for m in models.data:
             st.markdown(m.id)
         st.divider()
-        st.caption(f"Chat model: {LANGUAGE_MODEL_NAME}")
+        st.caption(f"Chat model: {LLM_MODEL_NAME}")
     except Exception as e:
         st.warning(f"Could not list models: {e}")
 
@@ -207,6 +208,10 @@ def render_sources(citations):
 def render_router_debug(router_debug):
     if not router_debug:
         return
+    
+    model_selection = model_selection_for_role(router_debug["role"])
+    model_name = router_debug.get("model_name") or model_selection["model_name"]
+    model_reason = router_debug.get("model_reason") or model_selection["reason"]
 
     with st.expander("Router Debug"):
         st.caption(
@@ -221,6 +226,8 @@ def render_router_debug(router_debug):
             )
         )
         st.markdown(f"**Reason:** {router_debug['reason']}")
+        st.markdown(f"**Model:** `{model_name}`")
+        st.markdown(f"**Model reason:** {model_reason}")
         st.markdown(f"**Verification need:** {router_debug['verification_need']}")
         st.markdown(f"**Next state:** {router_debug['next_state']}")
 

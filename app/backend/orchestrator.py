@@ -14,6 +14,21 @@ from app.backend.sqlite_store import create_session, init_db, log_turn, save_art
 from app.backend.llm_client import LLMClient
 from app.prompts.prompts import get_role_prompt
 from app.rag.llm import OpenAIChatBackend
+from app.infrastructure.config import (
+    ROUTER_MODEL_NAME,
+    SCRIBE_MODEL_NAME,
+    SEMANTIC_LINKING_MODEL_NAME,
+    MENTOR_MODEL_NAME,
+    CONTEXT_RECONSTRUCTOR_MODEL_NAME,
+    LLM_MODEL_NAME
+)
+
+
+def _chat_backend(model_name: str | None = None):
+    try:
+        return OpenAIChatBackend(model_name=model_name)
+    except TypeError:
+        return OpenAIChatBackend()
 
 
 def build_session_ctx(session_id: str) -> dict[str, Any]:
@@ -207,7 +222,8 @@ def handle_turn(
 
     intent = classify_intent(user_input)
 
-    backend = OpenAIChatBackend()
+    # Route the request first to determine the agent role
+    backend = _chat_backend(ROUTER_MODEL_NAME)
     route = route_with_agent(
         backend,
         user_input=user_input,
@@ -216,6 +232,30 @@ def handle_turn(
     )
     distance = route.distance
     knowledge_mode = route.knowledge_mode
+    role = route.role
+    
+    # Use model selection information from router if available
+    model_name = LLM_MODEL_NAME
+    model_selection = getattr(route, "model_selection", None)
+    if model_selection and "model_name" in model_selection:
+        model_name = model_selection["model_name"]
+    else:
+        # Fallback to legacy model selection logic
+        # Determine the appropriate model for this agent
+        if role == "ScribeAgent":
+            model_name = SCRIBE_MODEL_NAME
+        elif role == "SemanticLinkingAgent":
+            model_name = SEMANTIC_LINKING_MODEL_NAME
+        elif role == "MentorAgent":
+            model_name = MENTOR_MODEL_NAME
+        elif role == "ContextReconstructorAgent":
+            model_name = CONTEXT_RECONSTRUCTOR_MODEL_NAME
+        else:
+            # Default to the main LLM model for other agents
+            model_name = LLM_MODEL_NAME
+    
+    # Now create the backend with the appropriate model
+    backend = _chat_backend(model_name)
 
     retrieval = run_retrieval(
         query=user_input,
@@ -223,7 +263,6 @@ def handle_turn(
     )
     confidence = retrieval["confidence"]
 
-    role = route.role
     role_instructions = get_role_prompt(role)
 
     state = decide_state(
@@ -267,6 +306,8 @@ def handle_turn(
         "role": route.role,
         "knowledge_mode": route.knowledge_mode,
         "distance": route.distance,
+        "model_name": model_name,
+        "model_reason": (model_selection or {}).get("reason", "Chosen by the default configured language model."),
         "routing_confidence": route.routing_confidence,
         "reason": route.reason,
         "required_context": route.required_context,

@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import JSONDecodeError
+from typing import Any
 
 from app.backend.intent_distance import classify_intent, estimate_distance, infer_knowledge_mode
 from app.backend.role_router import role_router
 from app.domain.schema import RouterPayload
 from app.domain.types import Distance, KnowledgeMode, RoleName
+from app.infrastructure.config import (
+    CONTEXT_RECONSTRUCTOR_MODEL_NAME,
+    LLM_MODEL_NAME,
+    MENTOR_MODEL_NAME,
+    SCRIBE_MODEL_NAME,
+    SEMANTIC_LINKING_MODEL_NAME,
+)
 from app.infrastructure.tracing import traceable
 from app.prompts.router_agent_prompt import ROUTER_SYSTEM_PROMPT
 
@@ -95,6 +103,7 @@ class RouteDecision:
     verification_need: str
     next_state: str
     used_fallback: bool = False
+    model_selection: dict[str, Any] = field(default_factory=dict)
 
 
 def build_router_prompt(
@@ -133,6 +142,31 @@ def build_router_prompt(
     )
 
 
+ROLE_MODEL_NAMES: dict[RoleName, str] = {
+    "ScribeAgent": SCRIBE_MODEL_NAME,
+    "SemanticLinkingAgent": SEMANTIC_LINKING_MODEL_NAME,
+    "MentorAgent": MENTOR_MODEL_NAME,
+    "ContextReconstructorAgent": CONTEXT_RECONSTRUCTOR_MODEL_NAME,
+}
+
+ROLE_MODEL_REASONS: dict[RoleName, str] = {
+    "ScribeAgent": "Chosen from SCRIBE_MODEL_NAME because the selected role produces structured documentation artifacts.",
+    "SemanticLinkingAgent": "Chosen from SEMANTIC_LINKING_MODEL_NAME because the selected role synthesizes semantic relations across explicit artifacts.",
+    "MentorAgent": "Chosen from MENTOR_MODEL_NAME because the selected role explains expert knowledge for a novice audience.",
+    "ContextReconstructorAgent": "Chosen from CONTEXT_RECONSTRUCTOR_MODEL_NAME because the selected role reconstructs context and transfer conditions.",
+}
+
+
+def model_selection_for_role(role: RoleName) -> dict[str, Any]:
+    return {
+        "model_name": ROLE_MODEL_NAMES.get(role, LLM_MODEL_NAME),
+        "reason": ROLE_MODEL_REASONS.get(role, "Chosen from LLM_MODEL_NAME because no role-specific model is configured."),
+        "temperature": 0.2,
+        "thinking_required": False,
+        "response_format": {"type": "json_object"},
+    }
+
+
 def _heuristic_route(user_input: str, session_ctx: dict) -> RouteDecision:
     intent = classify_intent(user_input)
     distance = estimate_distance(user_input, intent)
@@ -148,6 +182,7 @@ def _heuristic_route(user_input: str, session_ctx: dict) -> RouteDecision:
         verification_need="none",
         next_state="agent_execution",
         used_fallback=True,
+        model_selection=model_selection_for_role(role),
     )
 
 
@@ -221,6 +256,8 @@ def _normalize_router_payload(parsed: dict) -> RouterPayload:
     reason = normalized.get("reason")
     normalized["reason"] = str(reason).strip() if reason is not None else ""
 
+    normalized.pop("model_selection", None)
+
     return RouterPayload.model_validate(normalized)
 
 
@@ -254,6 +291,7 @@ def route_with_agent(
             verification_need=payload.verification_need,
             next_state=payload.next_state,
             used_fallback=False,
+            model_selection=model_selection_for_role(payload.selected_agent),
         )
     except Exception:
         return _heuristic_route(user_input, session_ctx)
