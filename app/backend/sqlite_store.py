@@ -84,6 +84,23 @@ def init_db() -> None:
 
         CREATE INDEX IF NOT EXISTS idx_user_knowledge
         ON user_knowledge(user_id, concept_id);
+
+        -- NEW TABLE for session history
+        CREATE TABLE IF NOT EXISTS session_history (
+            session_id TEXT PRIMARY KEY,
+            user_id TEXT,
+            timestamp DATETIME,
+            router_classification JSON,
+            user_query TEXT,
+            generated_artefacts JSON,
+            citations_used JSON,
+            user_feedback JSON,
+            session_embedding BLOB
+        );
+
+        -- Indexes for fast queries
+        CREATE INDEX IF NOT EXISTS idx_sessions_user_time ON session_history(user_id, timestamp);
+        CREATE INDEX IF NOT EXISTS idx_sessions_class ON session_history(router_classification);
         """)
 
 

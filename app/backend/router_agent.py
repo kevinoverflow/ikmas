@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from typing import Any
+import sqlite3
 
 from app.backend.intent_distance import classify_intent, estimate_distance, infer_knowledge_mode
 from app.backend.role_router import role_router
@@ -18,6 +19,7 @@ from app.infrastructure.config import (
 )
 from app.infrastructure.tracing import traceable
 from app.prompts.router_agent_prompt import ROUTER_SYSTEM_PROMPT
+from app.backend.sqlite_store import get_conn
 
 
 AGENT_REGISTRY = [
@@ -261,6 +263,57 @@ def _normalize_router_payload(parsed: dict) -> RouterPayload:
     return RouterPayload.model_validate(normalized)
 
 
+def get_relevant_history(user_id: str, query_embedding: bytes, since_days: int = 30) -> dict:
+    """Query session history for relevant context"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    # Calculate the cutoff date
+    cursor.execute("""
+        SELECT datetime('now', '-? days')
+    """, (since_days,))
+    cutoff_date = cursor.fetchone()[0]
+    
+    # Query session history for the user within the time period
+    cursor.execute("""
+        SELECT router_classification, user_query, generated_artefacts, citations_used, session_embedding
+        FROM session_history 
+        WHERE user_id = ? AND timestamp > ? 
+        ORDER BY timestamp DESC
+        LIMIT 10
+    """, (user_id, cutoff_date))
+    
+    rows = cursor.fetchall()
+    
+    # Process the results for recurring theme detection
+    recurring_themes = []
+    uncaptured_themes = []
+    
+    for row in rows:
+        classification = json.loads(row[0]) if row[0] else {}
+        if classification:
+            # Extract potential recurring themes from previous classifications
+            seci_mode = classification.get("seci_mode", "")
+            reuse_situation = classification.get("reuse_situation", "")
+            
+            if seci_mode:
+                recurring_themes.append(seci_mode)
+            if reuse_situation:
+                recurring_themes.append(reuse_situation)
+    
+    return {
+        "recurring_themes": list(set(recurring_themes)),
+        "uncaptured_themes": list(set(uncaptured_themes))  # Placeholder for future logic
+    }
+
+
+def get_session_similarity_score(user_id: str, query_text: str, since_days: int = 30) -> float:
+    """Calculate similarity score between current query and session history"""
+    # This is a simplified implementation - in a real system we'd compute actual embeddings
+    # and compare them for similarity
+    return 0.0
+
+
 @traceable(name="router_agent_route", run_type="chain")
 def route_with_agent(
     backend,
@@ -281,6 +334,19 @@ def route_with_agent(
         )
         parsed = _load_json_object(raw)
         payload = _normalize_router_payload(parsed)
+        
+        # NEW: Session context enrichment
+        user_id = session_ctx.get("user_id")
+        if user_id:
+            # Get relevant session history for context enrichment
+            session_insights = get_relevant_history(user_id, b"", 30)  # Simplified embedding for now
+            
+            # Apply enrichment to the payload if needed
+            if session_insights["recurring_themes"]:
+                # Add extra fields to the payload for FSM use
+                payload.detected_themes = session_insights["recurring_themes"]
+                payload.knowledge_gaps = session_insights["uncaptured_themes"]
+        
         return RouteDecision(
             role=payload.selected_agent,
             knowledge_mode=SECI_TO_KNOWLEDGE_MODE[payload.seci_mode],

@@ -5,12 +5,12 @@ from typing import Any
 
 from app.domain.types import TurnRecord
 from app.backend.intent_distance import classify_intent
-from app.backend.router_agent import route_with_agent
+from app.backend.router_agent import route_with_agent, get_relevant_history
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
 from app.infrastructure.tracing import traceable
 from app.domain.schema import AssistantPayload
-from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts
+from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts, get_conn
 from app.backend.llm_client import LLMClient
 from app.prompts.prompts import get_role_prompt
 from app.rag.llm import OpenAIChatBackend
@@ -29,6 +29,53 @@ def _chat_backend(model_name: str | None = None):
         return OpenAIChatBackend(model_name=model_name)
     except TypeError:
         return OpenAIChatBackend()
+
+
+def store_session_history(
+    session_id: str,
+    user_id: str | None,
+    user_input: str,
+    router_classification: Any,
+    generated_artefacts: list,
+    citations_used: list,
+    user_feedback: dict | None = None
+) -> None:
+    """Store session information for future routing decisions"""
+    conn = get_conn()
+    with conn:
+        # Convert router_classification to dict if it's an object
+        if hasattr(router_classification, '__dict__'):
+            classification_dict = router_classification.__dict__
+        elif isinstance(router_classification, dict):
+            classification_dict = router_classification
+        else:
+            # Handle case where it's a simple namespace or other object
+            classification_dict = {
+                'role': getattr(router_classification, 'role', ''),
+                'knowledge_mode': getattr(router_classification, 'knowledge_mode', ''),
+                'distance': getattr(router_classification, 'distance', ''),
+                'routing_confidence': getattr(router_classification, 'routing_confidence', ''),
+                'reason': getattr(router_classification, 'reason', ''),
+                'required_context': getattr(router_classification, 'required_context', []),
+                'verification_need': getattr(router_classification, 'verification_need', ''),
+                'next_state': getattr(router_classification, 'next_state', ''),
+                'used_fallback': getattr(router_classification, 'used_fallback', False),
+            }
+        
+        conn.execute("""
+            INSERT OR REPLACE INTO session_history (
+                session_id, user_id, timestamp, router_classification, 
+                user_query, generated_artefacts, citations_used, user_feedback
+            ) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            user_id,
+            json.dumps(classification_dict),
+            user_input,
+            json.dumps(generated_artefacts),
+            json.dumps(citations_used),
+            json.dumps(user_feedback) if user_feedback else None
+        ))
 
 
 def build_session_ctx(session_id: str) -> dict[str, Any]:
@@ -234,6 +281,17 @@ def handle_turn(
     knowledge_mode = route.knowledge_mode
     role = route.role
     
+    # Store session history after routing (before executing the agent)
+    # This ensures we have context for the next request
+    store_session_history(
+        session_id=session_id,
+        user_id=user_id,
+        user_input=user_input,
+        router_classification=route,
+        generated_artefacts=[],
+        citations_used=[]
+    )
+    
     # Use model selection information from router if available
     model_name = LLM_MODEL_NAME
     model_selection = getattr(route, "model_selection", None)
@@ -271,6 +329,12 @@ def handle_turn(
         session_ctx=session_ctx,
         force_tutor_mode=False,
     )
+
+    # Pass session history insights to FSM if available
+    if hasattr(route, 'detected_themes'):
+        session_ctx['detected_themes'] = route.detected_themes
+    if hasattr(route, 'knowledge_gaps'):
+        session_ctx['knowledge_gaps'] = route.knowledge_gaps
 
     prompt = build_prompt(
         user_input=user_input,
@@ -343,6 +407,18 @@ def handle_turn(
         ),
     )
     log_turn(turn)
+
+    # Store session history for future routing
+    generated_artefacts = [a["title"] for a in payload["artefacts"]] if payload["artefacts"] else []
+    citations_used = [c["chunk_id"] for c in payload["citations"]] if payload["citations"] else []
+    store_session_history(
+        session_id=session_id,
+        user_id=user_id,
+        user_input=user_input,
+        router_classification=route,
+        generated_artefacts=generated_artefacts,
+        citations_used=citations_used
+    )
 
     if payload["artefacts"]:
         refs = [

@@ -31,6 +31,86 @@ if "docs_indexed" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+# DEBUG: Session management controls
+with st.sidebar:
+    st.header("🔧 Session Controls (Debug)")
+    
+    # Display current session info
+    st.caption(f"Current session ID:")
+    st.code(st.session_state.session_id)
+    
+    # Session ID input for debugging
+    new_session_id = st.text_input("New Session ID:", value="", placeholder="Enter a custom session ID")
+    if st.button("Switch to Session", type="secondary"):
+        if new_session_id:
+            st.session_state.session_id = new_session_id
+            st.session_state.chat_history = []
+            st.success(f"Switched to session: {new_session_id}")
+            st.rerun()
+    
+    # Reset to new random session
+    if st.button("New Random Session", type="secondary"):
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.chat_history = []
+        st.success(f"Created new session: {st.session_state.session_id}")
+        st.rerun()
+    
+    # Clear current session history
+    if st.button("Clear Session History"):
+        st.session_state.chat_history = []
+        st.success("Session history cleared")
+        st.rerun()
+    
+    # List all sessions (dropdown)
+    st.divider()
+    st.header("📋 Session History")
+    
+    try:
+        from app.backend.sqlite_store import get_conn
+        import json
+        
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT session_id, user_id, timestamp, router_classification 
+            FROM session_history 
+            ORDER BY timestamp DESC 
+            LIMIT 20
+        """)
+        sessions = cursor.fetchall()
+        
+        if sessions:
+            # Create a dropdown with session IDs
+            session_options = {}
+            for session in sessions:
+                session_id, user_id, timestamp, classification = session
+                # Use full session ID as title for clarity
+                display_text = session_id
+                if user_id:
+                    display_text += f" (User: {user_id})"
+                session_options[display_text] = session_id
+            
+            selected_session_text = st.selectbox(
+                "Select a session:",
+                options=list(session_options.keys()),
+                index=0
+            )
+            
+            if st.button("Switch to Selected Session"):
+                selected_session_id = session_options[selected_session_text]
+                st.session_state.session_id = selected_session_id
+                st.session_state.chat_history = []
+                st.success(f"Switched to session: {selected_session_id}")
+                st.rerun()
+                
+        else:
+            st.caption("No session history found")
+            
+    except Exception as e:
+        st.caption(f"Error reading sessions: {e}")
+    
+    st.divider()
+
 # Sidebar: Model info
 with st.sidebar:
     st.header("Model Information")
