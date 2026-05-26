@@ -2,53 +2,22 @@ from typing import List, Tuple, Literal
 from pathlib import Path
 import logging
 
-from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
 from app.rag.tokenizer import get_tokenizer
 from app.rag.storage import save_upload, StoredFile
 from app.rag.extractors.pdf_extractor import extract_pdf_documents
 from app.rag.extractors.text_extractor import extract_text_documents
-from app.rag.extractors.markdown_extractor import extract_markdown_documents
+from app.rag.extractors.markdown_extractor import extract_markdown_documents, split_markdown_documents
 from app.rag.extractors.image_extractor import extract_image_documents
+from app.rag.extractors.docx_extractor import extract_docx_documents
+from app.rag.extractors.pptx_extractor import extract_pptx_documents
 from app.infrastructure.tracing import traceable
 
 logger = logging.getLogger(__name__)
 
 ConflictAction = Literal["skip", "replace", "rename"]
-MARKDOWN_HEADERS_TO_SPLIT_ON = [
-    ("#", "Header 1"),
-    ("##", "Header 2"),
-    ("###", "Header 3"),
-    ("####", "Header 4"),
-    ("#####", "Header 5"),
-    ("######", "Header 6"),
-]
-
-
-def split_markdown_documents(docs: List[Document]) -> List[Document]:
-    """
-    Split raw markdown documents by header structure before token chunking.
-    """
-    if not docs:
-        return []
-
-    splitter = MarkdownHeaderTextSplitter(headers_to_split_on=MARKDOWN_HEADERS_TO_SPLIT_ON)
-    split_docs: List[Document] = []
-
-    for source_doc in docs:
-        section_docs = splitter.split_text(source_doc.page_content)
-        if not section_docs:
-            split_docs.append(source_doc)
-            continue
-
-        for section_doc in section_docs:
-            metadata = source_doc.metadata.copy()
-            metadata.update(section_doc.metadata)
-            metadata["chunk_type"] = "markdown_section"
-            split_docs.append(Document(page_content=section_doc.page_content, metadata=metadata))
-
-    return split_docs
 
 @traceable
 def split_file(stored: StoredFile, chunk_size: int = 512, chunk_overlap: int = 80) -> List[Document]:
@@ -75,6 +44,10 @@ def split_file(stored: StoredFile, chunk_size: int = 512, chunk_overlap: int = 8
         docs = extract_text_documents(stored)
     elif suffix == ".md":
         docs = split_markdown_documents(extract_markdown_documents(stored))
+    elif suffix == ".docx":
+        docs = extract_docx_documents(stored)
+    elif suffix == ".pptx":
+        docs = extract_pptx_documents(stored)
     elif suffix in [".png", ".jpg", ".jpeg", ".webp"]:
         docs = extract_image_documents(stored)
     else:
