@@ -127,7 +127,7 @@ with st.sidebar:
 
 st.subheader("📁 Dateien (Server / data/uploads)")
 
-files = list_collection_files(COLLECTION_ID)
+files = list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))
 
 if not files:
     st.info("Keine Dateien vorhanden.")
@@ -140,11 +140,24 @@ else:
             # Download button reads server file bytes
             path = get_file_path(COLLECTION_ID, f.path.name)
             if path:
+                # Determine MIME type based on file extension
+                mime_type = "application/pdf"
+                if f.path.suffix.lower() in [".docx", ".doc"]:
+                    mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                elif f.path.suffix.lower() in [".pptx", ".ppt"]:
+                    mime_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                elif f.path.suffix.lower() == ".txt":
+                    mime_type = "text/plain"
+                elif f.path.suffix.lower() == ".md":
+                    mime_type = "text/markdown"
+                elif f.path.suffix.lower() in [".png", ".jpg", ".jpeg", ".webp"]:
+                    mime_type = f"image/{f.path.suffix.lower()[1:]}"
+                
                 st.download_button(
                     "Download",
                     data=path.read_bytes(),
                     file_name=f.path.name,
-                    mime="application/pdf",
+                    mime=mime_type,
                     key=f"dl::{f.path.name}",
                     use_container_width=True,
                 )
@@ -171,11 +184,11 @@ if candidate:
 
 
 st.divider()
-st.subheader("⬆️ Neue PDFs hinzufügen")
+st.subheader("⬆️ Neue Dateien hinzufügen")
 
 uploaded_files = st.file_uploader(
-    "PDFs auswählen",
-    type=["pdf"],
+    "Dateien auswählen (PDF, DOCX, PPTX, TXT, MD)",
+    type=["pdf", "docx", "pptx", "txt", "md"],
     accept_multiple_files=True,
 )
 
@@ -211,13 +224,13 @@ st.divider()
 st.subheader("🔎 Index (Chroma) aus serverseitigen Dateien")
 reindex = st.checkbox("Reindex (Chroma collection vorher leeren)", value=False)
 
-if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID)) == 0):
+if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))) == 0):
     with st.spinner("Chunking + Embedding + Writing to Chroma..."):
         if reindex: 
             clear_collection(COLLECTION_ID)
 
         docs = []
-        for stored in list_collection_files(COLLECTION_ID):
+        for stored in list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md")):
             docs.extend(split_documents(split_file(stored)))
 
         n = add_docs(COLLECTION_ID, docs)
@@ -321,7 +334,7 @@ def render_router_debug(router_debug):
 # Chat
 st.markdown("---")
 query = st.chat_input(
-    "Ask a question about your PDFs:",
+    "Ask a question about your files:",
 )
 
 if query:
