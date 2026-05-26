@@ -127,6 +127,8 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
     assert get_role_prompt("MentorAgent") in seen["prompt"]
     assert payload["router_debug"]["role"] == "MentorAgent"
     assert payload["router_debug"]["knowledge_mode"] == "SOCIALIZATION"
+    assert payload["router_debug"]["model_name"]
+    assert payload["router_debug"]["model_reason"]
     assert payload["router_debug"]["used_fallback"] is False
     assert payload["telemetry"]["confidence"] == 0.88
     assert payload["telemetry"]["retrieval_count"] == 1

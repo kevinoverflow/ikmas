@@ -57,7 +57,7 @@ def test_run_vision_basic():
     assert result.text == "A screenshot with a chart and labels."
     assert result.chunk_type == "image_description"
     assert result.processor == "vision"
-    assert result.metadata["vision_model"] == "Qwen3-VL-8B-Instruct"
+    assert result.metadata["vision_model"] == "Qwen/Qwen3-VL-8B-Instruct"
     assert isinstance(result.metadata["visual_elements"], list)
 
 

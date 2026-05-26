@@ -1,15 +1,25 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from json import JSONDecodeError
+from typing import Any
+import sqlite3
 
 from app.backend.intent_distance import classify_intent, estimate_distance, infer_knowledge_mode
 from app.backend.role_router import role_router
 from app.domain.schema import RouterPayload
 from app.domain.types import Distance, KnowledgeMode, RoleName
+from app.infrastructure.config import (
+    CONTEXT_RECONSTRUCTOR_MODEL_NAME,
+    LLM_MODEL_NAME,
+    MENTOR_MODEL_NAME,
+    SCRIBE_MODEL_NAME,
+    SEMANTIC_LINKING_MODEL_NAME,
+)
 from app.infrastructure.tracing import traceable
 from app.prompts.router_agent_prompt import ROUTER_SYSTEM_PROMPT
+from app.backend.sqlite_store import get_conn
 
 
 AGENT_REGISTRY = [
@@ -95,6 +105,7 @@ class RouteDecision:
     verification_need: str
     next_state: str
     used_fallback: bool = False
+    model_selection: dict[str, Any] = field(default_factory=dict)
 
 
 def build_router_prompt(
@@ -133,6 +144,31 @@ def build_router_prompt(
     )
 
 
+ROLE_MODEL_NAMES: dict[RoleName, str] = {
+    "ScribeAgent": SCRIBE_MODEL_NAME,
+    "SemanticLinkingAgent": SEMANTIC_LINKING_MODEL_NAME,
+    "MentorAgent": MENTOR_MODEL_NAME,
+    "ContextReconstructorAgent": CONTEXT_RECONSTRUCTOR_MODEL_NAME,
+}
+
+ROLE_MODEL_REASONS: dict[RoleName, str] = {
+    "ScribeAgent": "Chosen from SCRIBE_MODEL_NAME because the selected role produces structured documentation artifacts.",
+    "SemanticLinkingAgent": "Chosen from SEMANTIC_LINKING_MODEL_NAME because the selected role synthesizes semantic relations across explicit artifacts.",
+    "MentorAgent": "Chosen from MENTOR_MODEL_NAME because the selected role explains expert knowledge for a novice audience.",
+    "ContextReconstructorAgent": "Chosen from CONTEXT_RECONSTRUCTOR_MODEL_NAME because the selected role reconstructs context and transfer conditions.",
+}
+
+
+def model_selection_for_role(role: RoleName) -> dict[str, Any]:
+    return {
+        "model_name": ROLE_MODEL_NAMES.get(role, LLM_MODEL_NAME),
+        "reason": ROLE_MODEL_REASONS.get(role, "Chosen from LLM_MODEL_NAME because no role-specific model is configured."),
+        "temperature": 0.2,
+        "thinking_required": False,
+        "response_format": {"type": "json_object"},
+    }
+
+
 def _heuristic_route(user_input: str, session_ctx: dict) -> RouteDecision:
     intent = classify_intent(user_input)
     distance = estimate_distance(user_input, intent)
@@ -148,6 +184,7 @@ def _heuristic_route(user_input: str, session_ctx: dict) -> RouteDecision:
         verification_need="none",
         next_state="agent_execution",
         used_fallback=True,
+        model_selection=model_selection_for_role(role),
     )
 
 
@@ -221,7 +258,60 @@ def _normalize_router_payload(parsed: dict) -> RouterPayload:
     reason = normalized.get("reason")
     normalized["reason"] = str(reason).strip() if reason is not None else ""
 
+    normalized.pop("model_selection", None)
+
     return RouterPayload.model_validate(normalized)
+
+
+def get_relevant_history(user_id: str, query_embedding: bytes, since_days: int = 30) -> dict:
+    """Query session history for relevant context"""
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    # Calculate the cutoff date
+    cursor.execute("""
+        SELECT datetime('now', '-? days')
+    """, (since_days,))
+    cutoff_date = cursor.fetchone()[0]
+    
+    # Query session history for the user within the time period
+    cursor.execute("""
+        SELECT router_classification, user_query, generated_artefacts, citations_used, session_embedding
+        FROM session_history 
+        WHERE user_id = ? AND timestamp > ? 
+        ORDER BY timestamp DESC
+        LIMIT 10
+    """, (user_id, cutoff_date))
+    
+    rows = cursor.fetchall()
+    
+    # Process the results for recurring theme detection
+    recurring_themes = []
+    uncaptured_themes = []
+    
+    for row in rows:
+        classification = json.loads(row[0]) if row[0] else {}
+        if classification:
+            # Extract potential recurring themes from previous classifications
+            seci_mode = classification.get("seci_mode", "")
+            reuse_situation = classification.get("reuse_situation", "")
+            
+            if seci_mode:
+                recurring_themes.append(seci_mode)
+            if reuse_situation:
+                recurring_themes.append(reuse_situation)
+    
+    return {
+        "recurring_themes": list(set(recurring_themes)),
+        "uncaptured_themes": list(set(uncaptured_themes))  # Placeholder for future logic
+    }
+
+
+def get_session_similarity_score(user_id: str, query_text: str, since_days: int = 30) -> float:
+    """Calculate similarity score between current query and session history"""
+    # This is a simplified implementation - in a real system we'd compute actual embeddings
+    # and compare them for similarity
+    return 0.0
 
 
 @traceable(name="router_agent_route", run_type="chain")
@@ -244,6 +334,19 @@ def route_with_agent(
         )
         parsed = _load_json_object(raw)
         payload = _normalize_router_payload(parsed)
+        
+        # NEW: Session context enrichment
+        user_id = session_ctx.get("user_id")
+        if user_id:
+            # Get relevant session history for context enrichment
+            session_insights = get_relevant_history(user_id, b"", 30)  # Simplified embedding for now
+            
+            # Apply enrichment to the payload if needed
+            if session_insights["recurring_themes"]:
+                # Add extra fields to the payload for FSM use
+                payload.detected_themes = session_insights["recurring_themes"]
+                payload.knowledge_gaps = session_insights["uncaptured_themes"]
+        
         return RouteDecision(
             role=payload.selected_agent,
             knowledge_mode=SECI_TO_KNOWLEDGE_MODE[payload.seci_mode],
@@ -254,6 +357,7 @@ def route_with_agent(
             verification_need=payload.verification_need,
             next_state=payload.next_state,
             used_fallback=False,
+            model_selection=model_selection_for_role(payload.selected_agent),
         )
     except Exception:
         return _heuristic_route(user_input, session_ctx)

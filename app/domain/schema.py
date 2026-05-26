@@ -51,6 +51,8 @@ class RouterDebug(BaseModel):
     role: RoleName
     knowledge_mode: str
     distance: str
+    model_name: str
+    model_reason: str
     routing_confidence: str
     reason: str
     required_context: list[str] = Field(default_factory=list)

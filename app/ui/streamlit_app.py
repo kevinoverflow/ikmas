@@ -4,8 +4,9 @@ import streamlit as st
 
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
+from app.backend.router_agent import model_selection_for_role
 from app.rag.ingest import split_file, split_documents
-from app.infrastructure.config import LANGUAGE_MODEL_NAME
+from app.infrastructure.config import LLM_MODEL_NAME
 from app.rag.storage import (
     list_collection_files,
     save_upload,
@@ -30,6 +31,86 @@ if "docs_indexed" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+# DEBUG: Session management controls
+with st.sidebar:
+    st.header("🔧 Session Controls (Debug)")
+    
+    # Display current session info
+    st.caption(f"Current session ID:")
+    st.code(st.session_state.session_id)
+    
+    # Session ID input for debugging
+    new_session_id = st.text_input("New Session ID:", value="", placeholder="Enter a custom session ID")
+    if st.button("Switch to Session", type="secondary"):
+        if new_session_id:
+            st.session_state.session_id = new_session_id
+            st.session_state.chat_history = []
+            st.success(f"Switched to session: {new_session_id}")
+            st.rerun()
+    
+    # Reset to new random session
+    if st.button("New Random Session", type="secondary"):
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.chat_history = []
+        st.success(f"Created new session: {st.session_state.session_id}")
+        st.rerun()
+    
+    # Clear current session history
+    if st.button("Clear Session History"):
+        st.session_state.chat_history = []
+        st.success("Session history cleared")
+        st.rerun()
+    
+    # List all sessions (dropdown)
+    st.divider()
+    st.header("📋 Session History")
+    
+    try:
+        from app.backend.sqlite_store import get_conn
+        import json
+        
+        conn = get_conn()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT session_id, user_id, timestamp, router_classification 
+            FROM session_history 
+            ORDER BY timestamp DESC 
+            LIMIT 20
+        """)
+        sessions = cursor.fetchall()
+        
+        if sessions:
+            # Create a dropdown with session IDs
+            session_options = {}
+            for session in sessions:
+                session_id, user_id, timestamp, classification = session
+                # Use full session ID as title for clarity
+                display_text = session_id
+                if user_id:
+                    display_text += f" (User: {user_id})"
+                session_options[display_text] = session_id
+            
+            selected_session_text = st.selectbox(
+                "Select a session:",
+                options=list(session_options.keys()),
+                index=0
+            )
+            
+            if st.button("Switch to Selected Session"):
+                selected_session_id = session_options[selected_session_text]
+                st.session_state.session_id = selected_session_id
+                st.session_state.chat_history = []
+                st.success(f"Switched to session: {selected_session_id}")
+                st.rerun()
+                
+        else:
+            st.caption("No session history found")
+            
+    except Exception as e:
+        st.caption(f"Error reading sessions: {e}")
+    
+    st.divider()
+
 # Sidebar: Model info
 with st.sidebar:
     st.header("Model Information")
@@ -39,7 +120,7 @@ with st.sidebar:
         for m in models.data:
             st.markdown(m.id)
         st.divider()
-        st.caption(f"Chat model: {LANGUAGE_MODEL_NAME}")
+        st.caption(f"Chat model: {LLM_MODEL_NAME}")
     except Exception as e:
         st.warning(f"Could not list models: {e}")
 
@@ -220,6 +301,10 @@ def render_sources(citations):
 def render_router_debug(router_debug):
     if not router_debug:
         return
+    
+    model_selection = model_selection_for_role(router_debug["role"])
+    model_name = router_debug.get("model_name") or model_selection["model_name"]
+    model_reason = router_debug.get("model_reason") or model_selection["reason"]
 
     with st.expander("Router Debug"):
         st.caption(
@@ -234,6 +319,8 @@ def render_router_debug(router_debug):
             )
         )
         st.markdown(f"**Reason:** {router_debug['reason']}")
+        st.markdown(f"**Model:** `{model_name}`")
+        st.markdown(f"**Model reason:** {model_reason}")
         st.markdown(f"**Verification need:** {router_debug['verification_need']}")
         st.markdown(f"**Next state:** {router_debug['next_state']}")
 

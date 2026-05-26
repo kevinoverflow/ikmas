@@ -4,7 +4,7 @@ from typing import Any
 
 from openai import OpenAI
 
-from app.infrastructure.config import API_KEY, BASE_URL, LANGUAGE_MODEL_NAME
+from app.infrastructure.config import API_KEY, BASE_URL, LLM_MODEL_NAME
 from app.infrastructure.tracing import maybe_wrap_openai, traceable
 
 
@@ -14,7 +14,7 @@ class OpenAIChatBackend:
             raise RuntimeError("Missing API key (SCADS_API_KEY / OPENAI_API_KEY).")
 
         self.client = maybe_wrap_openai(OpenAI(base_url=BASE_URL, api_key=API_KEY))
-        self.model_name = model_name or LANGUAGE_MODEL_NAME
+        self.model_name = model_name or LLM_MODEL_NAME
 
     @traceable(name="openai_chat_generate", run_type="llm")
     def generate(
