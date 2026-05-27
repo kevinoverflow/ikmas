@@ -32,6 +32,8 @@ Specialized agents that execute specific subtasks:
 - `ScribeDecisionExtractor`
 - `ScribeAssumptionExtractor` 
 - `ScribeIssueExtractor`
+- `ScribeConceptSummaryWriter`
+- `ScribeArtifactGenerator`
 
 ### 5. Aggregators
 Components that combine task results into final structured artifacts:
@@ -79,5 +81,9 @@ UI
 - Static agent registry prevents arbitrary agent creation
 - Execution budgets bound computational resources
 - Typed contracts prevent generic data structures
+
+### New Worker Agents Added
+- `ScribeConceptSummaryWriter`: Creates structured learning summaries for explicitly named concepts
+- `ScribeArtifactGenerator`: Generates persisted study/work artefacts (flashcards, quizzes, checklists, etc.)
 
 This implementation represents Phase 1 of the phased approach outlined in `truly_agentic_ikmas_revised.md`.

@@ -56,7 +56,7 @@ UI
 ### `handle_turn(...)`
 
 ```
-defhandle_turn(session_id:str,user_input:str,user_id:str|None=None) ->dict
+def handle_turn(session_id:str, user_input:str, user_id:str|None=None) -> dict
 ```
 
 This function executes a full system turn.
@@ -174,7 +174,20 @@ States:
 
 ---
 
-### 8. Prompt Construction
+### 8. Workflow Planning (NEW)
+
+```
+planning_decision=plan_workflow_decision(...)
+```
+
+When the selected agent is `ScribeAgent`, the orchestrator now:
+- Calls a Workflow Planner Agent to determine if decomposition is beneficial
+- If decomposition is justified, generates a `TaskPlan` with subtasks
+- The plan includes worker agents for specific knowledge extraction tasks
+
+---
+
+### 9. Prompt Construction
 
 ```
 prompt=build_prompt(...)
@@ -189,10 +202,11 @@ Includes:
 - knowledge mode
 - confidence
 - retrieved context
+- task plan (when applicable)
 
 ---
 
-### 9. LLM Call (Strict JSON)
+### 10. LLM Call (Strict JSON)
 
 ```
 payload=client.generate_json(prompt)
@@ -207,7 +221,7 @@ Handled by `LLMClient`:
 
 ---
 
-### 10. Final Validation
+### 11. Final Validation
 
 ```
 AssistantPayload.model_validate(payload)
@@ -220,7 +234,7 @@ Guarantees:
 
 ---
 
-### 11. Telemetry Enrichment
+### 12. Telemetry Enrichment
 
 ```
 payload["telemetry"]["intent"]=intent
@@ -245,9 +259,25 @@ This includes:
 - routing reason
 - fallback usage
 
+Additionally, when using workflow planning:
+```
+payload["task_plan"]={...}
+payload["workflow_planning_debug"]={...}
+```
+
 ---
 
-### 12. Turn Logging
+### 13. Workflow Execution (NEW)
+
+When a `TaskPlan` is generated:
+- The system calls `WorkflowController` to execute the plan
+- Worker agents execute their assigned tasks
+- Results are collected and traced
+- Aggregated artifacts are produced
+
+---
+
+### 14. Turn Logging
 
 ```
 log_turn(turn)
@@ -259,10 +289,11 @@ Stores:
 - system state
 - routing decisions
 - confidence
+- workflow plan and execution details
 
 ---
 
-### 13. Artefact Persistence
+### 15. Artefact Persistence
 
 ```
 save_artefacts(...)
@@ -275,10 +306,10 @@ Stores:
 
 ---
 
-### 14. Return Response
+### 16. Return Response
 
 ```
-returnpayload
+return payload
 ```
 
 Returned object is:
@@ -299,6 +330,7 @@ Kontext:
 - distance
 - confidence
 - state
+- task_plan (when applicable)
 
 Nutzeranfrage:
 ...
@@ -328,6 +360,7 @@ After `handle_turn()`:
 - Turn is persisted
 - Artefacts are stored
 - Telemetry is complete
+- Workflow execution details are logged when applicable
 
 ---
 
@@ -364,6 +397,7 @@ Every turn stores:
 - full payload
 - system state
 - routing decisions
+- workflow planning and execution details
 
 ---
 
