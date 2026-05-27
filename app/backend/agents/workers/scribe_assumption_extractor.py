@@ -1,39 +1,37 @@
-"""
-Scribe Agent worker implementations for agentic workflows.
-"""
-from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Any
+
 from app.backend.workflow.task_models import AgentTaskResult
-
-class ExecutionContext:
-    """Context for agent execution."""
-    def __init__(self, session_id: str, user_input: str, retrieval_context: list):
-        self.session_id = session_id
-        self.user_input = user_input
-        self.retrieval_context = retrieval_context
-
-class ScribeWorkerBase:
-    """Base class for Scribe worker agents."""
-    
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        """Execute the task with given context."""
-        raise NotImplementedError("Subclasses must implement execute method")
+from app.backend.agents.workers.scribe_utils import ScribeWorkerBase, matching_lines, source_text_from_context, strip_label
 
 class ScribeAssumptionExtractor(ScribeWorkerBase):
     """Extracts assumptions from input."""
     
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        # Simulate processing
+    def execute(self, task_spec: "TaskSpec", context: dict[str, Any]) -> AgentTaskResult:
         try:
-            input_scope = task_spec.input_scope
-            section = input_scope.get("section", "")
+            section = task_spec.input_scope.get("section", "")
+            text = source_text_from_context(context)
+            lines = matching_lines(
+                text,
+                (
+                    "assumption",
+                    "assume",
+                    "assuming",
+                    "annahme",
+                    "constraint",
+                    "dependency",
+                    "depends on",
+                    "provided that",
+                    "if ",
+                ),
+            )
             
             assumptions = [
                 {
-                    "assumption": f"Assumption extracted from section: {section}",
-                    "justification": "Based on implicit understanding in the input",
-                    "confidence": "high"
+                    "assumption": strip_label(line),
+                    "justification": "Extracted from assumption, constraint, or dependency wording in the input.",
+                    "confidence": "medium",
                 }
+                for line in lines
             ]
             
             return AgentTaskResult(

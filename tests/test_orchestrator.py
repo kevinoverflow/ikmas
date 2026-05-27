@@ -2,6 +2,8 @@ import json
 from types import SimpleNamespace
 
 from app.backend import orchestrator
+from app.backend.workflow.planner import WorkflowPlanningDecision
+from app.backend.workflow.task_models import TaskPlan, TaskSpec
 from app.prompts.prompts import get_role_prompt
 
 
@@ -245,3 +247,191 @@ def test_build_prompt_allows_general_knowledge_without_retrieval():
     assert '"role": "SemanticLinkingAgent"' in prompt
     assert "knowledge_mode: COMBINATION" in prompt
     assert "Synthesize and connect explicit project artefacts across files and themes." in prompt
+
+
+def test_handle_turn_runs_scribe_agentic_workflow(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: seen.setdefault("turn", turn))
+    monkeypatch.setattr(orchestrator, "save_artefacts", lambda **kwargs: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "run_retrieval",
+        lambda **kwargs: {
+            "chunks": [],
+            "top1": 0.0,
+            "avg_top3": 0.0,
+            "coverage": 0.0,
+            "confidence": 0.2,
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="ScribeAgent",
+            knowledge_mode="EXTERNALIZATION",
+            distance="SWP",
+            routing_confidence="high",
+            reason="meeting notes need structure",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        orchestrator,
+        "plan_workflow_decision",
+        lambda *args, **kwargs: WorkflowPlanningDecision(
+            task_plan=TaskPlan(
+                should_decompose=True,
+                rationale="Planner selected separate Scribe extraction tasks.",
+                aggregation_strategy="scribe_knowledge_artifact",
+                tasks=[
+                    TaskSpec(
+                        task_id="t1",
+                        task_type="extract_decisions",
+                        agent_role="scribe_decision_extractor",
+                        input_scope={"section": "decisions"},
+                        expected_output_schema="DecisionExtractionResult",
+                    ),
+                    TaskSpec(
+                        task_id="t2",
+                        task_type="extract_assumptions",
+                        agent_role="scribe_assumption_extractor",
+                        input_scope={"section": "assumptions"},
+                        expected_output_schema="AssumptionExtractionResult",
+                    ),
+                    TaskSpec(
+                        task_id="t3",
+                        task_type="extract_open_issues",
+                        agent_role="scribe_issue_extractor",
+                        input_scope={"section": "issues"},
+                        expected_output_schema="OpenIssueExtractionResult",
+                    ),
+                ],
+            ),
+            debug={
+                "planning_mode": "multi_agent_planning",
+                "selected_plan_source": "workflow_supervisor_agent",
+                "steps": [],
+            },
+        ),
+    )
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload(role="ScribeAgent")
+
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+
+    payload = orchestrator.handle_turn(
+        session_id="scribe-session",
+        user_input=(
+            "Meeting notes\n"
+            "- Decision: use Chroma for vector storage.\n"
+            "- Assumption: the SCADS API key is available in production.\n"
+            "- Open issue: confirm reranking latency before launch."
+        ),
+    )
+
+    assert payload["agent_trace"]["total_tasks"] == 3
+    assert payload["agent_trace"]["successful_tasks"] == 3
+    assert payload["workflow_result"]["decisions"][0]["decision"] == "use Chroma for vector storage."
+    assert payload["workflow_result"]["assumptions"][0]["assumption"] == "the SCADS API key is available in production."
+    assert payload["workflow_result"]["open_issues"][0]["issue"] == "confirm reranking latency before launch."
+    assert payload["workflow_planning_debug"]["planning_mode"] == "multi_agent_planning"
+    assert payload["artefacts"][0]["title"] == "Reusable Knowledge Artifact"
+    assert "Scribe agentic workflow" in payload["assistant_message"]
+
+
+def test_handle_turn_generates_flashcard_artefact_from_workflow(monkeypatch):
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: None)
+    monkeypatch.setattr(
+        orchestrator,
+        "run_retrieval",
+        lambda **kwargs: {
+            "chunks": [],
+            "top1": 0.0,
+            "avg_top3": 0.0,
+            "coverage": 0.0,
+            "confidence": 0.2,
+        },
+    )
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="ScribeAgent",
+            knowledge_mode="EXTERNALIZATION",
+            distance="SWP",
+            routing_confidence="high",
+            reason="flashcard artifact generation",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        orchestrator,
+        "plan_workflow_decision",
+        lambda *args, **kwargs: WorkflowPlanningDecision(
+            task_plan=TaskPlan(
+                should_decompose=True,
+                rationale="Planner selected flashcard generation.",
+                aggregation_strategy="scribe_knowledge_artifact",
+                tasks=[
+                    TaskSpec(
+                        task_id="t1",
+                        task_type="generate_artefact",
+                        agent_role="scribe_artifact_generator",
+                        input_scope={"section": "flashcards", "artifact_type": "flashcards", "title": "Privatrecht Flashcards"},
+                        expected_output_schema="ArtefactGenerationResult",
+                    )
+                ],
+            ),
+            debug={"planning_mode": "multi_agent_planning", "validation_status": "accepted_multi_agent"},
+        ),
+    )
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload(role="ScribeAgent")
+
+    saved = {}
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "save_artefacts", lambda **kwargs: saved.update(kwargs))
+
+    payload = orchestrator.handle_turn(
+        session_id="flashcard-session",
+        user_input="Wo sind die Flashcards?",
+        chat_history=[
+            {
+                "user": "## Willenserklärung\n## Vertragsschluss\nGenerate flashcards for all concepts.",
+                "assistant": "Hier sind die Flashcards.",
+            }
+        ],
+    )
+
+    assert payload["workflow_result"]["artefacts"]
+    assert payload["artefacts"][0]["type"] == "flashcards"
+    assert payload["artefacts"][0]["title"] == "Privatrecht Flashcards"
+    assert saved["artefacts"][0]["type"] == "flashcards"

@@ -1,46 +1,38 @@
-"""
-Scribe Agent worker implementations for agentic workflows.
-"""
-from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Any
+
 from app.backend.workflow.task_models import AgentTaskResult
-
-class ExecutionContext:
-    """Context for agent execution."""
-    def __init__(self, session_id: str, user_input: str, retrieval_context: list):
-        self.session_id = session_id
-        self.user_input = user_input
-        self.retrieval_context = retrieval_context
-
-class ScribeWorkerBase:
-    """Base class for Scribe worker agents."""
-    
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        """Execute the task with given context."""
-        raise NotImplementedError("Subclasses must implement execute method")
+from app.backend.agents.workers.scribe_utils import ScribeWorkerBase, matching_lines, source_text_from_context, strip_label
 
 class ScribeDecisionExtractor(ScribeWorkerBase):
     """Extracts decisions from input."""
     
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        # In a real implementation, this would call an LLM with a specific prompt
-        # For now, we'll simulate with a stub
-        
-        # Simulate processing from context
+    def execute(self, task_spec: "TaskSpec", context: dict[str, Any]) -> AgentTaskResult:
         try:
-            # Extract the section of input relevant to this task
-            input_scope = task_spec.input_scope
-            section = input_scope.get("section", "")
-            
-            # Simulate LLM processing - in reality, this would use LLMClient
-            decisions = [
-                {
-                    "decision": f"Decision extracted from section: {section}",
-                    "rationale": "Based on the input analysis",
-                    "stakeholders": ["Team Lead", "Product Manager"],
-                    "date": "2024-01-01"
-                }
-            ]
+            section = task_spec.input_scope.get("section", "")
+            text = source_text_from_context(context)
+            lines = matching_lines(
+                text,
+                (
+                    "decision",
+                    "decided",
+                    "agreed",
+                    "beschluss",
+                    "entschieden",
+                    "we will",
+                    "we chose",
+                ),
+            )
+
+            decisions = []
+            for line in lines:
+                decisions.append(
+                    {
+                        "decision": strip_label(line),
+                        "rationale": "Extracted from explicit decision wording in the input.",
+                        "stakeholders": [],
+                        "confidence": "medium",
+                    }
+                )
             
             return AgentTaskResult(
                 task_id=task_spec.task_id,

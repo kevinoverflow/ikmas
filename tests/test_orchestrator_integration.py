@@ -13,6 +13,7 @@ def test_handle_turn_with_workflow_plan():
     assert callable(handle_turn)
     
     # Test that we can import the modified schema
-    assert hasattr(AssistantPayload, 'task_plan')
-    assert hasattr(AssistantPayload, 'agent_trace')
-    assert hasattr(AssistantPayload, 'workflow_result')
+    assert "task_plan" in AssistantPayload.model_fields
+    assert "workflow_planning_debug" in AssistantPayload.model_fields
+    assert "agent_trace" in AssistantPayload.model_fields
+    assert "workflow_result" in AssistantPayload.model_fields

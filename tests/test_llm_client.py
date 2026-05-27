@@ -100,3 +100,52 @@ def test_generate_json_salvages_plain_text_response():
 
     assert payload["assistant_message"] == "Bitcoin ist ein dezentrales digitales Zahlungssystem."
     assert payload["telemetry"]["fallback_used"] is False
+
+
+def test_parse_and_validate_json_preserves_task_plan():
+    raw = """
+    {
+      "role": "ScribeAgent",
+      "state": null,
+      "assistant_message": "Structured notes prepared.",
+      "questions": [],
+      "artefacts": [],
+      "actions": [{"type": "none", "payload": {}}],
+      "citations": [],
+      "telemetry": {
+        "intent": "project_specific",
+        "distance": "SWP",
+        "confidence": 0.9,
+        "retrieval_count": 0,
+        "repair_used": false,
+        "fallback_used": false
+      },
+      "task_plan": {
+        "should_decompose": true,
+        "rationale": "Meeting notes include separate decisions and issues.",
+        "aggregation_strategy": "scribe_knowledge_artifact",
+        "tasks": [
+          {
+            "task_id": "t1",
+            "task_type": "extract_decisions",
+            "agent_role": "scribe_decision_extractor",
+            "input_scope": {"section": "decisions"},
+            "expected_output_schema": "DecisionExtractionResult"
+          }
+        ]
+      }
+    }
+    """
+
+    payload = llm_client.LLMClient.parse_and_validate_json(
+        raw,
+        role="ScribeAgent",
+        state=None,
+        intent="project_specific",
+        distance="SWP",
+        confidence=0.9,
+        retrieval_count=0,
+    )
+
+    assert payload["task_plan"]["should_decompose"] is True
+    assert payload["task_plan"]["tasks"][0]["agent_role"] == "scribe_decision_extractor"

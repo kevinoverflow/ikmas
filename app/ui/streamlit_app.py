@@ -31,9 +31,17 @@ if "docs_indexed" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+if "show_execution_debug" not in st.session_state:
+    st.session_state.show_execution_debug = True
+
 # DEBUG: Session management controls
 with st.sidebar:
     st.header("🔧 Session Controls (Debug)")
+    st.checkbox(
+        "Show execution debug",
+        key="show_execution_debug",
+        help="Show routing, single/multi-agent mode, task plans, traces, and raw workflow payloads.",
+    )
     
     # Display current session info
     st.caption(f"Current session ID:")
@@ -331,6 +339,122 @@ def render_router_debug(router_debug):
                 st.markdown(f"- {item}")
 
 
+def render_workflow(payload):
+    trace = payload.get("agent_trace")
+    result = payload.get("workflow_result")
+    if not trace and not result:
+        return
+
+    with st.expander("Agentic Workflow", expanded=True):
+        if trace:
+            st.caption(
+                " · ".join(
+                    [
+                        f"parent={trace.get('root_agent', 'unknown')}",
+                        f"tasks={trace.get('successful_tasks', 0)}/{trace.get('total_tasks', 0)}",
+                        f"failed={trace.get('failed_tasks', 0)}",
+                    ]
+                )
+            )
+            for node in trace.get("nodes", []):
+                status = node.get("status", "unknown")
+                task_id = node.get("task_id", "")
+                role = node.get("agent_role", "")
+                st.markdown(f"- `{status}` `{task_id}` {role}")
+                if node.get("error"):
+                    st.caption(node["error"])
+
+        if result:
+            st.markdown("**Reusable knowledge artifact**")
+            if result.get("decisions"):
+                st.markdown("Decisions")
+                for item in result["decisions"]:
+                    st.markdown(f"- {item.get('decision', item)}")
+            if result.get("assumptions"):
+                st.markdown("Assumptions")
+                for item in result["assumptions"]:
+                    st.markdown(f"- {item.get('assumption', item)}")
+            if result.get("open_issues"):
+                st.markdown("Open issues")
+                for item in result["open_issues"]:
+                    st.markdown(f"- {item.get('issue', item)}")
+            if result.get("learning_summaries"):
+                st.markdown("Learning summaries")
+                for item in result["learning_summaries"]:
+                    st.markdown(f"- **{item.get('concept', 'Concept')}**: {item.get('summary', '')}")
+            if result.get("flashcards"):
+                st.markdown("Flashcards")
+                for item in result["flashcards"]:
+                    st.markdown(f"- **{item.get('front', 'Front')}**: {item.get('back', '')}")
+            if result.get("artefacts"):
+                st.markdown("Generated artefacts")
+                for item in result["artefacts"]:
+                    st.markdown(f"- **{item.get('title', 'Artefact')}** `{item.get('type', '')}`")
+            if result.get("reuse_guidance"):
+                st.markdown("Reuse guidance")
+                for item in result["reuse_guidance"]:
+                    st.markdown(f"- {item}")
+
+
+def render_execution_debug(payload):
+    if not st.session_state.get("show_execution_debug", True):
+        return
+
+    router_debug = payload.get("router_debug") or {}
+    telemetry = payload.get("telemetry") or {}
+    task_plan = payload.get("task_plan")
+    planning_debug = payload.get("workflow_planning_debug")
+    trace = payload.get("agent_trace")
+    workflow_result = payload.get("workflow_result")
+    is_multi_agent = bool(trace and trace.get("total_tasks", 0) > 0)
+    mode = "multi-agent workflow" if is_multi_agent else "single-agent response"
+
+    with st.expander("Execution Debug", expanded=True):
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Mode", mode)
+        c2.metric("Agent", payload.get("role", "unknown"))
+        c3.metric("Retrieval", telemetry.get("retrieval_count", 0))
+
+        st.caption(
+            " · ".join(
+                [
+                    f"intent={telemetry.get('intent', 'unknown')}",
+                    f"distance={telemetry.get('distance', 'unknown')}",
+                    f"confidence={telemetry.get('confidence', 0):.2f}"
+                    if isinstance(telemetry.get("confidence"), (int, float))
+                    else "confidence=unknown",
+                    "fallback" if telemetry.get("fallback_used") else "normal",
+                    "repair" if telemetry.get("repair_used") else "no-repair",
+                ]
+            )
+        )
+
+        if router_debug:
+            st.markdown("**Router**")
+            st.json(router_debug, expanded=False)
+
+        if task_plan:
+            st.markdown("**Task plan**")
+            st.json(task_plan, expanded=False)
+            if not task_plan.get("should_decompose"):
+                st.caption("Decision: stay single-agent for this turn.")
+
+        if planning_debug:
+            st.markdown("**Planning agents**")
+            st.json(planning_debug, expanded=False)
+
+        if trace:
+            st.markdown("**Agent trace**")
+            st.json(trace, expanded=False)
+
+        if workflow_result:
+            st.markdown("**Workflow result**")
+            st.json(workflow_result, expanded=False)
+
+        st.markdown("**Payload keys**")
+        st.code(", ".join(sorted(payload.keys())))
+
+
 # Chat
 st.markdown("---")
 query = st.chat_input(
@@ -368,7 +492,9 @@ if st.session_state.chat_history:
             st.caption(" · ".join(meta))
 
             render_questions(payload.get("questions", []))
+            render_workflow(payload)
             render_artefacts(payload.get("artefacts", []))
+            render_execution_debug(payload)
             render_router_debug(payload.get("router_debug"))
 
         render_sources(payload.get("citations", []))

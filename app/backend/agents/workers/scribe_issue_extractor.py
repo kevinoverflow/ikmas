@@ -1,40 +1,38 @@
-"""
-Scribe Agent worker implementations for agentic workflows.
-"""
-from typing import Dict, Any, Optional
-from pydantic import BaseModel
+from typing import Any
+
 from app.backend.workflow.task_models import AgentTaskResult
-
-class ExecutionContext:
-    """Context for agent execution."""
-    def __init__(self, session_id: str, user_input: str, retrieval_context: list):
-        self.session_id = session_id
-        self.user_input = user_input
-        self.retrieval_context = retrieval_context
-
-class ScribeWorkerBase:
-    """Base class for Scribe worker agents."""
-    
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        """Execute the task with given context."""
-        raise NotImplementedError("Subclasses must implement execute method")
+from app.backend.agents.workers.scribe_utils import ScribeWorkerBase, matching_lines, source_text_from_context, strip_label
 
 class ScribeIssueExtractor(ScribeWorkerBase):
     """Extracts open issues from input."""
     
-    def execute(self, task_spec: "TaskSpec", context: Dict[str, Any]) -> AgentTaskResult:
-        # Simulate processing  
+    def execute(self, task_spec: "TaskSpec", context: dict[str, Any]) -> AgentTaskResult:
         try:
-            input_scope = task_spec.input_scope
-            section = input_scope.get("section", "")
+            section = task_spec.input_scope.get("section", "")
+            text = source_text_from_context(context)
+            lines = matching_lines(
+                text,
+                (
+                    "issue",
+                    "risk",
+                    "open",
+                    "question",
+                    "todo",
+                    "action",
+                    "blocked",
+                    "unclear",
+                    "problem",
+                ),
+            )
             
             open_issues = [
                 {
-                    "issue": f"Open issue from section: {section}",
-                    "description": "A potential problem identified in the input",
+                    "issue": strip_label(line),
+                    "description": "Extracted from issue, risk, question, or action wording in the input.",
                     "priority": "medium",
-                    "owner": "Project Team"
+                    "owner": None,
                 }
+                for line in lines
             ]
             
             return AgentTaskResult(

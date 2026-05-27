@@ -1,19 +1,22 @@
 """
 Scribe Aggregator for combining task results into a reusable knowledge artifact.
 """
-from typing import List, Dict, Any, Optional
-from pydantic import BaseModel
+from typing import List, Dict, Any
+from pydantic import BaseModel, Field
 from app.backend.workflow.task_models import AgentTaskResult
 
 class ScribeArtifact(BaseModel):
     """Reusable knowledge artifact produced by Scribe agent."""
     artifact_type: str = "reusable_knowledge_artifact"
-    decisions: List[Dict[str, Any]] = []
-    assumptions: List[Dict[str, Any]] = []
-    open_issues: List[Dict[str, Any]] = []
-    reuse_guidance: List[str] = []
-    source_map: List[Dict[str, Any]] = []
-    confidence_notes: List[str] = []
+    decisions: List[Dict[str, Any]] = Field(default_factory=list)
+    assumptions: List[Dict[str, Any]] = Field(default_factory=list)
+    open_issues: List[Dict[str, Any]] = Field(default_factory=list)
+    learning_summaries: List[Dict[str, Any]] = Field(default_factory=list)
+    flashcards: List[Dict[str, Any]] = Field(default_factory=list)
+    artefacts: List[Dict[str, Any]] = Field(default_factory=list)
+    reuse_guidance: List[str] = Field(default_factory=list)
+    source_map: List[Dict[str, Any]] = Field(default_factory=list)
+    confidence_notes: List[str] = Field(default_factory=list)
 
 class ScribeAggregator:
     """Aggregates results from Scribe worker tasks into a knowledge artifact."""
@@ -40,6 +43,15 @@ class ScribeAggregator:
             # Handle open issue extraction results
             if "open_issues" in output:
                 artifact.open_issues.extend(output["open_issues"])
+
+            if "learning_summaries" in output:
+                artifact.learning_summaries.extend(output["learning_summaries"])
+
+            if "flashcards" in output:
+                artifact.flashcards.extend(output["flashcards"])
+
+            if "artefacts" in output:
+                artifact.artefacts.extend(output["artefacts"])
             
             # Add source mapping info
             artifact.source_map.append({
@@ -57,11 +69,27 @@ class ScribeAggregator:
             
         if artifact.open_issues:
             artifact.reuse_guidance.append("Consider open issues when applying this knowledge.")
+
+        if artifact.learning_summaries:
+            artifact.reuse_guidance.append("Use the learning summaries as study sheets and validate them against lecture material.")
+
+        if artifact.flashcards:
+            artifact.reuse_guidance.append("Use the flashcards for active recall and spaced repetition.")
+
+        if artifact.artefacts:
+            artifact.reuse_guidance.append("Store and reuse the generated artefacts in the knowledge base.")
         
         # Add confidence notes
-        if not artifact.decisions and not artifact.assumptions and not artifact.open_issues:
+        if (
+            not artifact.decisions
+            and not artifact.assumptions
+            and not artifact.open_issues
+            and not artifact.learning_summaries
+            and not artifact.flashcards
+            and not artifact.artefacts
+        ):
             artifact.confidence_notes.append("No structured information extracted.")
         else:
-            artifact.confidence_notes.append("Artifact created with high confidence based on structured extraction.")
+            artifact.confidence_notes.append("Artifact created from explicit signals in the provided input.")
             
         return artifact

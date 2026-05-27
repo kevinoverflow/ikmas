@@ -5,6 +5,8 @@ from app.backend.agents.registry import AGENT_REGISTRY
 from app.backend.agents.workers.scribe_decision_extractor import ScribeDecisionExtractor
 from app.backend.agents.workers.scribe_assumption_extractor import ScribeAssumptionExtractor
 from app.backend.agents.workers.scribe_issue_extractor import ScribeIssueExtractor
+from app.backend.agents.workers.scribe_concept_summary_writer import ScribeConceptSummaryWriter
+from app.backend.agents.workers.scribe_artifact_generator import ScribeArtifactGenerator
 from app.backend.aggregators.scribe_aggregator import ScribeAggregator
 
 def test_task_plan_model():
@@ -93,11 +95,15 @@ def test_agent_registry():
     assert "scribe_decision_extractor" in AGENT_REGISTRY
     assert "scribe_assumption_extractor" in AGENT_REGISTRY
     assert "scribe_issue_extractor" in AGENT_REGISTRY
+    assert "scribe_concept_summary_writer" in AGENT_REGISTRY
+    assert "scribe_artifact_generator" in AGENT_REGISTRY
     
     # Test that registered agents are instantiable
     assert AGENT_REGISTRY["scribe_decision_extractor"] == ScribeDecisionExtractor
     assert AGENT_REGISTRY["scribe_assumption_extractor"] == ScribeAssumptionExtractor
     assert AGENT_REGISTRY["scribe_issue_extractor"] == ScribeIssueExtractor
+    assert AGENT_REGISTRY["scribe_concept_summary_writer"] == ScribeConceptSummaryWriter
+    assert AGENT_REGISTRY["scribe_artifact_generator"] == ScribeArtifactGenerator
 
 def test_scribe_aggregator():
     """Test ScribeAggregator basic functionality."""

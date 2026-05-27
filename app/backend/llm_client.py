@@ -5,6 +5,7 @@ from json import JSONDecodeError
 from typing import Any
 
 from app.domain.schema import AssistantPayload
+from app.backend.workflow.task_models import TaskPlan
 from app.domain.types import ALL_ROLE_NAMES
 from app.infrastructure.tracing import traceable
 from app.rag.llm import OpenAIChatBackend
@@ -304,7 +305,14 @@ class LLMClient:
         if not isinstance(telemetry, dict):
             telemetry = {}
 
-        return {
+        task_plan = None
+        if isinstance(parsed.get("task_plan"), dict):
+            try:
+                task_plan = TaskPlan.model_validate(parsed["task_plan"]).model_dump()
+            except Exception:
+                task_plan = None
+
+        normalized = {
             "role": normalized_role,
             "state": normalized_state,
             "assistant_message": assistant_message,
@@ -322,6 +330,9 @@ class LLMClient:
             },
             "router_debug": None,
         }
+        if task_plan is not None:
+            normalized["task_plan"] = task_plan
+        return normalized
 
     @staticmethod
     def salvage_payload(
