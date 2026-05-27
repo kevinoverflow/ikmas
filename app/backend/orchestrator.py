@@ -22,6 +22,9 @@ from app.infrastructure.config import (
     CONTEXT_RECONSTRUCTOR_MODEL_NAME,
     LLM_MODEL_NAME
 )
+from app.backend.workflow.controller import WorkflowController
+from app.backend.workflow.task_models import ExecutionBudget
+from app.backend.aggregators.scribe_aggregator import ScribeAggregator
 
 
 def _chat_backend(model_name: str | None = None):
@@ -384,6 +387,45 @@ def handle_turn(
     # Final hard validation
     validated = AssistantPayload.model_validate(payload)
     payload = validated.model_dump()
+    
+    # Check if we should run an agentic workflow
+    # This is a simplified condition for now - in practice, this would be determined by
+    # the parent agent's decision in the TaskPlan
+    if (validated.task_plan and 
+        validated.task_plan.should_decompose and 
+        validated.role == "ScribeAgent"):
+        
+        # Initialize workflow controller with default budget
+        workflow_controller = WorkflowController(ExecutionBudget())
+        
+        # Create execution context
+        execution_context = {
+            "session_id": session_id,
+            "user_input": user_input,
+            "retrieval_context": retrieval["chunks"]
+        }
+        
+        # Run workflow
+        workflow_result = workflow_controller.run(
+            plan=validated.task_plan,
+            context=execution_context,
+            root_agent=validated.role
+        )
+        
+        # Aggregate results
+        aggregator = ScribeAggregator()
+        aggregated_artifact = aggregator.aggregate(workflow_result.results)
+        
+        # Update payload with workflow results
+        payload["workflow_result"] = aggregated_artifact.model_dump()
+        payload["agent_trace"] = workflow_result.trace.model_dump()
+        
+        # Set the assistant message to indicate workflow was used
+        payload["assistant_message"] = (
+            f"Agentic workflow executed for {len(workflow_result.results)} tasks. "
+            f"See workflow_result for details."
+        )
+        payload["role"] = "ScribeAgent"
 
     turn = TurnRecord(
         session_id=session_id,
