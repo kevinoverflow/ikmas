@@ -8,6 +8,7 @@ fully structured response format for every assistant turn.
 from typing import Literal, Any
 from pydantic import BaseModel, Field, ConfigDict
 from app.domain.types import RoleName, TutorState
+from app.backend.workflow.task_models import TaskPlan, AgentTrace
 
 class Question(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +73,9 @@ class AssistantPayload(BaseModel):
     citations: list[Citation]
     telemetry: Telemetry
     router_debug: RouterDebug | None = None
+    task_plan: TaskPlan | None = None
+    agent_trace: AgentTrace | None = None
+    workflow_result: dict | None = None
 
 
 class RouterPayload(BaseModel):
