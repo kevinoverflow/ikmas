@@ -24,6 +24,7 @@ from app.infrastructure.config import (
 )
 from app.backend.workflow.controller import WorkflowController
 from app.backend.workflow.task_models import ExecutionBudget
+from app.backend.workflow.planner import plan_workflow_decision
 from app.backend.aggregators.scribe_aggregator import ScribeAggregator
 
 
@@ -241,6 +242,23 @@ def merge_citations(
     return merged
 
 
+def format_scribe_artifact_message(artifact: dict[str, Any], trace: dict[str, Any]) -> str:
+    counts = {
+        "decisions": len(artifact.get("decisions", [])),
+        "assumptions": len(artifact.get("assumptions", [])),
+        "open issues": len(artifact.get("open_issues", [])),
+        "learning summaries": len(artifact.get("learning_summaries", [])),
+        "flashcards": len(artifact.get("flashcards", [])),
+        "artefacts": len(artifact.get("artefacts", [])),
+    }
+    count_text = ", ".join(f"{count} {label}" for label, count in counts.items())
+    return (
+        "I ran the Scribe agentic workflow and created a reusable knowledge artifact "
+        f"with {count_text}. "
+        f"{trace.get('successful_tasks', 0)}/{trace.get('total_tasks', 0)} subtasks completed."
+    )
+
+
 @traceable(name="handle_turn", run_type="chain")
 def handle_turn(
     session_id: str,
@@ -384,6 +402,21 @@ def handle_turn(
     }
     payload["citations"] = merge_citations(payload["citations"], retrieval["chunks"])
 
+    planning_decision = plan_workflow_decision(
+        _chat_backend(ROUTER_MODEL_NAME),
+        user_input=user_input,
+        selected_role=role,
+        knowledge_mode=knowledge_mode,
+        distance=distance,
+        routing_reason=route.reason,
+        retrieved_chunks=retrieval["chunks"],
+        chat_history=chat_history,
+        parent_artefact_count=len(payload.get("artefacts", [])),
+        parent_message=payload.get("assistant_message", ""),
+    )
+    payload["task_plan"] = planning_decision.task_plan.model_dump()
+    payload["workflow_planning_debug"] = planning_decision.debug
+
     # Final hard validation
     validated = AssistantPayload.model_validate(payload)
     payload = validated.model_dump()
@@ -402,7 +435,8 @@ def handle_turn(
         execution_context = {
             "session_id": session_id,
             "user_input": user_input,
-            "retrieval_context": retrieval["chunks"]
+            "retrieval_context": retrieval["chunks"],
+            "chat_history": chat_history or [],
         }
         
         # Run workflow
@@ -417,14 +451,32 @@ def handle_turn(
         aggregated_artifact = aggregator.aggregate(workflow_result.results)
         
         # Update payload with workflow results
-        payload["workflow_result"] = aggregated_artifact.model_dump()
-        payload["agent_trace"] = workflow_result.trace.model_dump()
+        artifact_dict = aggregated_artifact.model_dump()
+        trace_dict = workflow_result.trace.model_dump()
+        payload["workflow_result"] = artifact_dict
+        payload["agent_trace"] = trace_dict
+        if artifact_dict.get("artefacts"):
+            payload["artefacts"].extend(artifact_dict["artefacts"])
+        elif artifact_dict.get("flashcards"):
+            payload["artefacts"].append(
+                {
+                    "type": "flashcards",
+                    "title": "Generated Flashcards",
+                    "content": json.dumps(artifact_dict["flashcards"], ensure_ascii=False, indent=2),
+                    "concept_ids": [],
+                }
+            )
+        else:
+            payload["artefacts"].append(
+                {
+                    "type": "summary",
+                    "title": "Reusable Knowledge Artifact",
+                    "content": json.dumps(artifact_dict, ensure_ascii=False, indent=2),
+                    "concept_ids": [],
+                }
+            )
         
-        # Set the assistant message to indicate workflow was used
-        payload["assistant_message"] = (
-            f"Agentic workflow executed for {len(workflow_result.results)} tasks. "
-            f"See workflow_result for details."
-        )
+        payload["assistant_message"] = format_scribe_artifact_message(artifact_dict, trace_dict)
         payload["role"] = "ScribeAgent"
 
     turn = TurnRecord(

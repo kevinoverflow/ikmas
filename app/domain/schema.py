@@ -74,6 +74,7 @@ class AssistantPayload(BaseModel):
     telemetry: Telemetry
     router_debug: RouterDebug | None = None
     task_plan: TaskPlan | None = None
+    workflow_planning_debug: dict | None = None
     agent_trace: AgentTrace | None = None
     workflow_result: dict | None = None
 
