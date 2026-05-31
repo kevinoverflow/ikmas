@@ -69,7 +69,11 @@ def init_db() -> None:
 
         CREATE TABLE IF NOT EXISTS users (
             user_id TEXT PRIMARY KEY,
-            profile_json TEXT
+            name TEXT,
+            email TEXT,
+            password_hash TEXT,
+            profile_json TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS user_knowledge (
@@ -89,6 +93,7 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS session_history (
             session_id TEXT PRIMARY KEY,
             user_id TEXT,
+            session_title TEXT,
             timestamp DATETIME,
             router_classification JSON,
             user_query TEXT,
@@ -102,6 +107,24 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_sessions_user_time ON session_history(user_id, timestamp);
         CREATE INDEX IF NOT EXISTS idx_sessions_class ON session_history(router_classification);
         """)
+
+        _ensure_column(conn, "users", "name", "TEXT")
+        _ensure_column(conn, "users", "email", "TEXT")
+        _ensure_column(conn, "users", "password_hash", "TEXT")
+        _ensure_column(conn, "users", "created_at", "TEXT DEFAULT CURRENT_TIMESTAMP")
+        _ensure_column(conn, "session_history", "session_title", "TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+
+
+def _ensure_column(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    definition: str,
+) -> None:
+    columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def create_session(session_id: str) -> None:

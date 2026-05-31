@@ -1,7 +1,9 @@
 import uuid
+import json
 
 import streamlit as st
 
+from app.backend.auth import AuthError, authenticate_user, create_user
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
 from app.backend.router_agent import model_selection_for_role
@@ -22,6 +24,9 @@ st.title("Intelligent Knowledge Management Assistance System")
 
 
 # Session State Init
+if "auth_user" not in st.session_state:
+    st.session_state.auth_user = None
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
@@ -31,83 +36,174 @@ if "docs_indexed" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+
+def _set_authenticated_user(user) -> None:
+    st.session_state.auth_user = {
+        "id": user.user_id,
+        "name": user.name,
+        "email": user.email,
+    }
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.chat_history = []
+
+
+def _logout() -> None:
+    st.session_state.auth_user = None
+    st.session_state.session_id = str(uuid.uuid4())
+    st.session_state.chat_history = []
+    st.rerun()
+
+
+def _load_session_chat_history(session_id: str, user_id: str) -> list[dict]:
+    from app.backend.sqlite_store import get_conn
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT user_input, llm_json
+            FROM turns
+            WHERE session_id = ? AND user_id = ?
+            ORDER BY created_at, id
+            """,
+            (session_id, user_id),
+        ).fetchall()
+
+    history = []
+    for row in rows:
+        try:
+            payload = json.loads(row["llm_json"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        history.append({"user": row["user_input"], "payload": payload})
+    return history
+
+
+def render_auth_workflow() -> bool:
+    if st.session_state.auth_user:
+        return True
+
+    st.subheader("Sign in")
+    login_tab, register_tab = st.tabs(["Login", "Create account"])
+
+    with login_tab:
+        with st.form("login_form"):
+            email = st.text_input("Email", key="login_email")
+            password = st.text_input("Password", type="password", key="login_password")
+            submitted = st.form_submit_button("Login", type="primary")
+
+        if submitted:
+            user = authenticate_user(email, password)
+            if user is None:
+                st.error("Invalid email or password.")
+            else:
+                _set_authenticated_user(user)
+                st.success(f"Welcome back, {user.name}.")
+                st.rerun()
+
+    with register_tab:
+        with st.form("register_form"):
+            name = st.text_input("Name", key="register_name")
+            email = st.text_input("Email", key="register_email")
+            password = st.text_input("Password", type="password", key="register_password")
+            confirm_password = st.text_input("Confirm password", type="password", key="register_confirm_password")
+            submitted = st.form_submit_button("Create account", type="primary")
+
+        if submitted:
+            if password != confirm_password:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    user = create_user(name, email, password)
+                except AuthError as e:
+                    st.error(str(e))
+                else:
+                    _set_authenticated_user(user)
+                    st.success(f"Account created for {user.name}.")
+                    st.rerun()
+
+    st.info("Create an account or log in to use your private IKMAS workspace.")
+    return False
+
+
+if not render_auth_workflow():
+    st.stop()
+
+current_user = st.session_state.auth_user
+
 # DEBUG: Session management controls
 with st.sidebar:
-    st.header("🔧 Session Controls (Debug)")
-    
-    # Display current session info
-    st.caption(f"Current session ID:")
-    st.code(st.session_state.session_id)
-    
-    # Session ID input for debugging
-    new_session_id = st.text_input("New Session ID:", value="", placeholder="Enter a custom session ID")
-    if st.button("Switch to Session", type="secondary"):
-        if new_session_id:
-            st.session_state.session_id = new_session_id
-            st.session_state.chat_history = []
-            st.success(f"Switched to session: {new_session_id}")
-            st.rerun()
-    
-    # Reset to new random session
-    if st.button("New Random Session", type="secondary"):
+    st.header("Account")
+    st.write(f"**{current_user['name']}**")
+    st.caption(current_user["email"])
+    st.caption(f"User ID: {current_user['id']}")
+    if st.button("Log out", type="secondary"):
+        _logout()
+
+    st.divider()
+    st.header("Chats")
+
+    if st.button("New chat", type="primary", use_container_width=True):
         st.session_state.session_id = str(uuid.uuid4())
         st.session_state.chat_history = []
-        st.success(f"Created new session: {st.session_state.session_id}")
         st.rerun()
-    
-    # Clear current session history
-    if st.button("Clear Session History"):
-        st.session_state.chat_history = []
-        st.success("Session history cleared")
-        st.rerun()
-    
-    # List all sessions (dropdown)
-    st.divider()
-    st.header("📋 Session History")
-    
+
     try:
         from app.backend.sqlite_store import get_conn
-        import json
         
         conn = get_conn()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT session_id, user_id, timestamp, router_classification 
+            SELECT session_id, session_title, user_query, timestamp
             FROM session_history 
+            WHERE user_id = ?
             ORDER BY timestamp DESC 
             LIMIT 20
-        """)
+        """, (current_user["id"],))
         sessions = cursor.fetchall()
         
         if sessions:
-            # Create a dropdown with session IDs
-            session_options = {}
             for session in sessions:
-                session_id, user_id, timestamp, classification = session
-                # Use full session ID as title for clarity
-                display_text = session_id
-                if user_id:
-                    display_text += f" (User: {user_id})"
-                session_options[display_text] = session_id
-            
-            selected_session_text = st.selectbox(
-                "Select a session:",
-                options=list(session_options.keys()),
-                index=0
-            )
-            
-            if st.button("Switch to Selected Session"):
-                selected_session_id = session_options[selected_session_text]
-                st.session_state.session_id = selected_session_id
-                st.session_state.chat_history = []
-                st.success(f"Switched to session: {selected_session_id}")
-                st.rerun()
+                session_id, title, user_query, timestamp = session
+                display_title = title or user_query or "Untitled chat"
+                button_type = "primary" if session_id == st.session_state.session_id else "secondary"
+                if st.button(
+                    display_title,
+                    key=f"chat::{session_id}",
+                    type=button_type,
+                    use_container_width=True,
+                ):
+                    st.session_state.session_id = session_id
+                    st.session_state.chat_history = _load_session_chat_history(
+                        session_id,
+                        current_user["id"],
+                    )
+                    st.rerun()
                 
         else:
-            st.caption("No session history found")
+            st.caption("No chats yet.")
             
     except Exception as e:
-        st.caption(f"Error reading sessions: {e}")
+        st.caption(f"Error reading chats: {e}")
+
+    with st.expander("Session debug"):
+        st.caption("Current session ID:")
+        st.code(st.session_state.session_id)
+
+        new_session_id = st.text_input("New Session ID:", value="", placeholder="Enter a custom session ID")
+        if st.button("Switch to Session", type="secondary"):
+            if new_session_id:
+                st.session_state.session_id = new_session_id
+                st.session_state.chat_history = _load_session_chat_history(
+                    new_session_id,
+                    current_user["id"],
+                )
+                st.success(f"Switched to session: {new_session_id}")
+                st.rerun()
+
+        if st.button("Clear Session History"):
+            st.session_state.chat_history = []
+            st.success("Session history cleared")
+            st.rerun()
     
     st.divider()
 
@@ -255,6 +351,7 @@ def ask_assistant(question: str):
     return handle_turn(
         session_id=st.session_state.session_id,
         user_input=question,
+        user_id=current_user["id"],
         collection_name=COLLECTION_ID,
         chat_history=_format_chat_history_for_backend(st.session_state.chat_history),
     )
