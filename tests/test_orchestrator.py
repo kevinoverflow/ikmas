@@ -227,6 +227,60 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
     assert seen["refs"] == [{"ref_type": "chunk", "ref_id": "chunk-7"}]
 
 
+def test_handle_turn_scopes_default_collection_for_authenticated_user(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    def fake_run_retrieval(**kwargs):
+        seen["retrieval_kwargs"] = kwargs
+        return {
+            "chunks": [],
+            "top1": 0.0,
+            "avg_top3": 0.0,
+            "coverage": 0.0,
+            "confidence": 0.0,
+        }
+
+    monkeypatch.setattr(orchestrator, "run_retrieval", fake_run_retrieval)
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="MentorAgent",
+            knowledge_mode="SOCIALIZATION",
+            distance="ESN",
+            routing_confidence="high",
+            reason="novice explanation",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda: object())
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: None)
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload()
+
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+
+    orchestrator.handle_turn(
+        session_id="session-789",
+        user_id="user-123",
+        user_input="Was steht in meinen Dateien?",
+    )
+
+    assert seen["retrieval_kwargs"]["collection_name"] == "u_user-123__default"
+
+
 def test_build_prompt_allows_general_knowledge_without_retrieval():
     prompt = orchestrator.build_prompt(
         user_input="Analysiere Bitcoin",

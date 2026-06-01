@@ -48,3 +48,14 @@ def test_get_file_path_and_delete(tmp_path, monkeypatch):
     assert storage.delete_file("default", "doc.pdf") is True
     assert storage.get_file_path("default", "doc.pdf") is None
     assert storage.delete_file("default", "doc.pdf") is False
+
+
+def test_collection_id_is_sanitized_to_stay_under_upload_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(storage, "UPLOAD_DIR", tmp_path)
+
+    status, info = storage.save_upload("../other-user", "doc.pdf", b"data", on_name_conflict="skip")
+
+    assert status == "saved"
+    assert info is not None
+    assert info.path == tmp_path / "other-user" / "doc.pdf"
+    assert not (tmp_path.parent / "other-user" / "doc.pdf").exists()

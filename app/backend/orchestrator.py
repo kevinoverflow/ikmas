@@ -12,6 +12,7 @@ from app.backend.retrieval import run_retrieval
 from app.infrastructure.tracing import traceable
 from app.domain.schema import AssistantPayload
 from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts, get_conn
+from app.backend.user_scope import user_workspace_id
 from app.backend.llm_client import LLMClient
 from app.prompts.prompts import get_role_prompt
 from app.rag.llm import OpenAIChatBackend
@@ -289,6 +290,9 @@ def handle_turn(
     """
     init_db()
     create_session(session_id)
+
+    if user_id and collection_name == "default":
+        collection_name = user_workspace_id(user_id)
 
     session_ctx = build_session_ctx(session_id, user_id)
 

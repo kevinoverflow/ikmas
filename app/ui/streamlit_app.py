@@ -7,6 +7,7 @@ from app.backend.auth import AuthError, authenticate_user, create_user
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
 from app.backend.router_agent import model_selection_for_role
+from app.backend.user_scope import user_workspace_id
 from app.rag.ingest import split_file, split_documents
 from app.infrastructure.config import LLM_MODEL_NAME
 from app.rag.storage import (
@@ -17,7 +18,7 @@ from app.rag.storage import (
 )
 from app.rag.vectorstore import add_docs, clear_collection
 
-COLLECTION_ID = "default"
+LOGICAL_COLLECTION_ID = "default"
 
 st.set_page_config(page_title="IKMAS", layout="centered")
 st.title("Intelligent Knowledge Management Assistance System")
@@ -129,6 +130,7 @@ if not render_auth_workflow():
     st.stop()
 
 current_user = st.session_state.auth_user
+collection_id = user_workspace_id(current_user["id"], LOGICAL_COLLECTION_ID)
 
 # DEBUG: Session management controls
 with st.sidebar:
@@ -221,9 +223,9 @@ with st.sidebar:
         st.warning(f"Could not list models: {e}")
 
 
-st.subheader("📁 Dateien (Server / data/uploads)")
+st.subheader("📁 Deine Dateien")
 
-files = list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))
+files = list_collection_files(collection_id, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))
 
 if not files:
     st.info("Keine Dateien vorhanden.")
@@ -234,7 +236,7 @@ else:
             st.write(f"**{f.path.name}**  ·  {f.size_bytes} bytes  ·  {f.sha256[:12]}")
         with c2:
             # Download button reads server file bytes
-            path = get_file_path(COLLECTION_ID, f.path.name)
+            path = get_file_path(collection_id, f.path.name)
             if path:
                 # Determine MIME type based on file extension
                 mime_type = "application/pdf"
@@ -269,7 +271,7 @@ if candidate:
     cc1, cc2 = st.columns([1, 1])
     with cc1:
         if st.button("Ja, löschen", type="primary", use_container_width=True):
-            ok = delete_file(COLLECTION_ID, candidate)
+            ok = delete_file(collection_id, candidate)
             st.session_state["delete_candidate"] = None
             st.toast("Gelöscht" if ok else "Nicht gefunden", icon="🗑️")
             st.rerun()
@@ -298,7 +300,7 @@ if uploaded_files and st.button("Speichern (mit Dedupe)", type="primary"):
 
     for uf in uploaded_files:
         status, _ = save_upload(
-            collection_id=COLLECTION_ID,
+            collection_id=collection_id,
             filename=uf.name,
             data=uf.getvalue(),
             on_name_conflict=name_conflict_mode,
@@ -320,16 +322,16 @@ st.divider()
 st.subheader("🔎 Index (Chroma) aus serverseitigen Dateien")
 reindex = st.checkbox("Reindex (Chroma collection vorher leeren)", value=False)
 
-if st.button("Index now", type="primary", disabled=len(list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))) == 0):
+if st.button("Index now", type="primary", disabled=len(list_collection_files(collection_id, exts=(".pdf", ".docx", ".pptx", ".txt", ".md"))) == 0):
     with st.spinner("Chunking + Embedding + Writing to Chroma..."):
         if reindex: 
-            clear_collection(COLLECTION_ID)
+            clear_collection(collection_id)
 
         docs = []
-        for stored in list_collection_files(COLLECTION_ID, exts=(".pdf", ".docx", ".pptx", ".txt", ".md")):
+        for stored in list_collection_files(collection_id, exts=(".pdf", ".docx", ".pptx", ".txt", ".md")):
             docs.extend(split_documents(split_file(stored)))
 
-        n = add_docs(COLLECTION_ID, docs)
+        n = add_docs(collection_id, docs)
         st.session_state.docs_indexed = True
 
     st.success(f"Indexed {n} chunks")
@@ -352,7 +354,7 @@ def ask_assistant(question: str):
         session_id=st.session_state.session_id,
         user_input=question,
         user_id=current_user["id"],
-        collection_name=COLLECTION_ID,
+        collection_name=collection_id,
         chat_history=_format_chat_history_for_backend(st.session_state.chat_history),
     )
 

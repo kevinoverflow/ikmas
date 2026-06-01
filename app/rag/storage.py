@@ -9,6 +9,7 @@ import tempfile
 from typing import List, Literal, Optional, Tuple
 
 from app.infrastructure.config import UPLOAD_DIR
+from app.backend.user_scope import sanitize_workspace_part
 
 ConflictAction = Literal["skip", "replace", "rename"]
 FileStatus = Literal["saved", "skipped_identical", "skipped_conflict", "replaced", "renamed"]
@@ -39,6 +40,9 @@ def sanitize_filename(name: str) -> str:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+def collection_dir(collection_id: str) -> Path:
+    return UPLOAD_DIR / sanitize_workspace_part(collection_id, fallback="default")
 
 def sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     h = hashlib.sha256()
@@ -74,7 +78,7 @@ def list_collection_files(collection_id: str, exts: Tuple[str, ...] = (".pdf",))
     """
     Loads existing files from data/uploads/<collection_id>/ and returns their metadata + hashes.
     """
-    coll_dir = UPLOAD_DIR / collection_id
+    coll_dir = collection_dir(collection_id)
     ensure_dir(coll_dir)
 
     out: List[StoredFile] = []
@@ -135,7 +139,7 @@ def save_upload(
     safe_name = sanitize_filename(filename)
     new_hash = sha256_bytes(data)
 
-    coll_dir = UPLOAD_DIR / collection_id
+    coll_dir = collection_dir(collection_id)
     ensure_dir(coll_dir)
 
     existing = list_collection_files(collection_id)
@@ -195,7 +199,7 @@ def delete_file(collection_id: str, filename: str) -> bool:
     Returns True if deleted, False if not found.
     """
     safe = sanitize_filename(filename)
-    path = UPLOAD_DIR / collection_id / safe
+    path = collection_dir(collection_id) / safe
     if not path.exists() or not path.is_file():
         return False
     path.unlink()
@@ -203,7 +207,7 @@ def delete_file(collection_id: str, filename: str) -> bool:
 
 def get_file_path(collection_id: str, filename: str) -> Optional[Path]:
     safe = sanitize_filename(filename)
-    path = UPLOAD_DIR / collection_id / safe
+    path = collection_dir(collection_id) / safe
     return path if path.exists() and path.is_file() else None
 
 def list_filenames(collection_id: str) -> List[str]:
