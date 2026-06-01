@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.domain.types import TurnRecord
+from app.backend import sqlite_store
 from app.backend.intent_distance import classify_intent
 from app.backend.router_agent import route_with_agent, get_relevant_history
 from app.backend.fsm import decide_state
@@ -31,6 +32,17 @@ def _chat_backend(model_name: str | None = None):
         return OpenAIChatBackend()
 
 
+def build_session_title(user_input: str, max_chars: int = 48) -> str:
+    title = " ".join(user_input.strip().split())
+    if not title:
+        return "New chat"
+    if len(title) <= max_chars:
+        return title
+    if max_chars <= 3:
+        return title[:max_chars]
+    return title[: max_chars - 3].rstrip() + "..."
+
+
 def store_session_history(
     session_id: str,
     user_id: str | None,
@@ -41,6 +53,7 @@ def store_session_history(
     user_feedback: dict | None = None
 ) -> None:
     """Store session information for future routing decisions"""
+    sqlite_store.init_db()
     conn = get_conn()
     with conn:
         # Convert router_classification to dict if it's an object
@@ -63,13 +76,23 @@ def store_session_history(
             }
         
         conn.execute("""
-            INSERT OR REPLACE INTO session_history (
-                session_id, user_id, timestamp, router_classification, 
+            INSERT INTO session_history (
+                session_id, user_id, session_title, timestamp, router_classification,
                 user_query, generated_artefacts, citations_used, user_feedback
-            ) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                user_id = excluded.user_id,
+                session_title = COALESCE(session_history.session_title, excluded.session_title),
+                timestamp = excluded.timestamp,
+                router_classification = excluded.router_classification,
+                user_query = excluded.user_query,
+                generated_artefacts = excluded.generated_artefacts,
+                citations_used = excluded.citations_used,
+                user_feedback = excluded.user_feedback
         """, (
             session_id,
             user_id,
+            build_session_title(user_input),
             json.dumps(classification_dict),
             user_input,
             json.dumps(generated_artefacts),
@@ -78,11 +101,13 @@ def store_session_history(
         ))
 
 
-def build_session_ctx(session_id: str) -> dict[str, Any]:
+def build_session_ctx(session_id: str, user_id: str | None = None) -> dict[str, Any]:
     """
     Placeholder for future session restoration.
-    For now, returns an empty session context.
+    For now, returns an authenticated user context when available.
     """
+    if user_id:
+        return build_user_profile(user_id)
     return {}
 
 
@@ -265,7 +290,7 @@ def handle_turn(
     init_db()
     create_session(session_id)
 
-    session_ctx = build_session_ctx(session_id)
+    session_ctx = build_session_ctx(session_id, user_id)
 
     intent = classify_intent(user_input)
 

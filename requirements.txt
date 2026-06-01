@@ -5,6 +5,7 @@ langchain-community
 langchain-openai
 langchain-text-splitters
 streamlit
+Authlib>=1.3.2
 tiktoken
 pypdf
 chromadb

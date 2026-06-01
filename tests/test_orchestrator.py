@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from app.backend import orchestrator
+from app.backend import sqlite_store
 from app.prompts.prompts import get_role_prompt
 
 
@@ -245,3 +246,45 @@ def test_build_prompt_allows_general_knowledge_without_retrieval():
     assert '"role": "SemanticLinkingAgent"' in prompt
     assert "knowledge_mode: COMBINATION" in prompt
     assert "Synthesize and connect explicit project artefacts across files and themes." in prompt
+
+
+def test_store_session_history_keeps_first_message_as_title(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite_store, "DB_PATH", tmp_path / "ikmas.db")
+    sqlite_store.init_db()
+
+    orchestrator.store_session_history(
+        session_id="session-title",
+        user_id="user-1",
+        user_input="Turn notes into decision record",
+        router_classification={"role": "ScribeAgent"},
+        generated_artefacts=[],
+        citations_used=[],
+    )
+    orchestrator.store_session_history(
+        session_id="session-title",
+        user_id="user-1",
+        user_input="Now make it shorter",
+        router_classification={"role": "ScribeAgent"},
+        generated_artefacts=[],
+        citations_used=[],
+    )
+
+    with sqlite_store.get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT session_title, user_query
+            FROM session_history
+            WHERE session_id = ?
+            """,
+            ("session-title",),
+        ).fetchone()
+
+    assert row["session_title"] == "Turn notes into decision record"
+    assert row["user_query"] == "Now make it shorter"
+
+
+def test_build_session_title_truncates_long_input():
+    title = orchestrator.build_session_title(" ".join(["knowledge"] * 20), max_chars=20)
+
+    assert title == "knowledge knowled..."
+    assert len(title) == 20
