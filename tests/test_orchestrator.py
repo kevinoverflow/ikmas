@@ -78,6 +78,16 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
             verification_need="none",
             next_state="agent_execution",
             used_fallback=False,
+            detected_themes=["MentorAgent"],
+            knowledge_gaps=["retrieval basics"],
+            related_sessions=[
+                {
+                    "session_id": "older-session",
+                    "title": "Retrieval intro",
+                    "query": "Explain RAG",
+                    "generated_artefacts": ["Glossary"],
+                }
+            ],
         )
 
     def fake_decide_state(role, retrieval_confidence, session_ctx, force_tutor_mode=False):
@@ -118,12 +128,34 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
     assert seen["init_db"] == 1
     assert seen["session_id"] == "session-123"
     assert seen["retrieval_args"] == ("Erkläre bitte Retrieval", "project-a", 30, 8)
-    assert seen["route_args"][1:] == ("Erkläre bitte Retrieval", [{"user": "Hallo", "assistant": "Hi"}], {})
-    assert seen["state_args"] == ("MentorAgent", 0.88, {}, False)
+    assert seen["route_args"][1] == "Erkläre bitte Retrieval"
+    assert seen["route_args"][2] == [{"user": "Hallo", "assistant": "Hi"}]
+    assert seen["route_args"][3]["session_id"] == "session-123"
+    assert seen["state_args"] == (
+        "MentorAgent",
+        0.88,
+        {
+            "session_id": "session-123",
+            "detected_themes": ["MentorAgent"],
+            "knowledge_gaps": ["retrieval basics"],
+            "related_sessions": [
+                {
+                    "session_id": "older-session",
+                    "title": "Retrieval intro",
+                    "query": "Explain RAG",
+                    "generated_artefacts": ["Glossary"],
+                }
+            ],
+        },
+        False,
+    )
     assert seen["fallback_kwargs"]["fallback_role"] == "MentorAgent"
     assert seen["fallback_kwargs"]["fallback_state"] is None
     assert "Nutzer: Hallo" in seen["prompt"]
     assert "knowledge_mode: SOCIALIZATION" in seen["prompt"]
+    assert "Session Context:" in seen["prompt"]
+    assert "Retrieval intro" in seen["prompt"]
+    assert "retrieval basics" in seen["prompt"]
     assert "Rollenanweisung:" in seen["prompt"]
     assert get_role_prompt("MentorAgent") in seen["prompt"]
     assert payload["router_debug"]["role"] == "MentorAgent"
@@ -131,6 +163,9 @@ def test_handle_turn_uses_runtime_pipeline_and_enriches_sources(monkeypatch):
     assert payload["router_debug"]["model_name"]
     assert payload["router_debug"]["model_reason"]
     assert payload["router_debug"]["used_fallback"] is False
+    assert payload["router_debug"]["detected_themes"] == ["MentorAgent"]
+    assert payload["router_debug"]["knowledge_gaps"] == ["retrieval basics"]
+    assert payload["router_debug"]["related_sessions"][0]["title"] == "Retrieval intro"
     assert payload["telemetry"]["confidence"] == 0.88
     assert payload["telemetry"]["retrieval_count"] == 1
     assert payload["citations"] == [
@@ -293,12 +328,24 @@ def test_build_prompt_allows_general_knowledge_without_retrieval():
         knowledge_mode="COMBINATION",
         confidence=0.71,
         chat_history=[],
+        session_ctx={
+            "detected_themes": ["SemanticLinkingAgent"],
+            "related_sessions": [
+                {
+                    "title": "Market scan",
+                    "query": "Compare adoption themes",
+                    "generated_artefacts": ["Theme map"],
+                }
+            ],
+        },
     )
 
     assert "Wenn kein Retrieval-Kontext vorhanden ist" in prompt
     assert "Analysiere Bitcoin" in prompt
     assert '"role": "SemanticLinkingAgent"' in prompt
     assert "knowledge_mode: COMBINATION" in prompt
+    assert "Market scan" in prompt
+    assert "Theme map" in prompt
     assert "Synthesize and connect explicit project artefacts across files and themes." in prompt
 
 

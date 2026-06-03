@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
 from json import JSONDecodeError
-from typing import Any
-import sqlite3
+from typing import Any, Literal
 
-from app.backend.intent_distance import classify_intent, estimate_distance, infer_knowledge_mode
-from app.backend.role_router import role_router
+from pydantic import BaseModel, ConfigDict, Field
+
 from app.domain.schema import RouterPayload
 from app.domain.types import Distance, KnowledgeMode, RoleName
 from app.infrastructure.config import (
@@ -94,23 +92,28 @@ REUSE_ALIASES: dict[str, str] = {
 }
 
 
-@dataclass(frozen=True)
-class RouteDecision:
+class RouteDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     role: RoleName
     knowledge_mode: KnowledgeMode
     distance: Distance
-    routing_confidence: str
+    routing_confidence: Literal["high", "medium", "low"]
     reason: str
-    required_context: list[str]
-    verification_need: str
-    next_state: str
+    required_context: list[str] = Field(default_factory=list)
+    verification_need: str = "none"
+    next_state: str = "agent_execution"
     used_fallback: bool = False
-    model_selection: dict[str, Any] = field(default_factory=dict)
+    model_selection: dict[str, Any] = Field(default_factory=dict)
+    detected_themes: list[str] = Field(default_factory=list)
+    knowledge_gaps: list[str] = Field(default_factory=list)
+    related_sessions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 def build_router_prompt(
     user_input: str,
     chat_history: list[dict[str, str]] | None = None,
+    session_insights: dict[str, Any] | None = None,
 ) -> str:
     history_lines: list[str] = []
     for turn in (chat_history or [])[-5:]:
@@ -122,12 +125,38 @@ def build_router_prompt(
             history_lines.append(f"Assistant: {assistant_turn}")
 
     history_block = "\n".join(history_lines) if history_lines else "(no prior conversation)"
+    session_insights = session_insights or {}
 
     return json.dumps(
         {
             "available_agents": AGENT_REGISTRY,
             "user_request": user_input,
             "chat_history": history_block,
+            "allowed_values": {
+                "seci_mode": ["Socialization", "Externalization", "Combination", "Internalization"],
+                "reuse_situation": [
+                    "Shared Work Producer",
+                    "Shared Work Practitioner",
+                    "Expertise-Seeking Novice",
+                    "Secondary Knowledge Miner",
+                ],
+                "selected_agent": [
+                    "ScribeAgent",
+                    "SemanticLinkingAgent",
+                    "MentorAgent",
+                    "ContextReconstructorAgent",
+                ],
+                "routing_confidence": ["high", "medium", "low"],
+            },
+            "session_context": {
+                "recurring_themes": session_insights.get("recurring_themes", []),
+                "knowledge_gaps": session_insights.get("uncaptured_themes", []),
+                "related_sessions": session_insights.get("related_sessions", []),
+                "instruction": (
+                    "Use session context only as routing evidence. "
+                    "Do not let it override the current request when the current request is explicit."
+                ),
+            },
             "required_output_fields": [
                 "seci_mode",
                 "reuse_situation",
@@ -169,34 +198,28 @@ def model_selection_for_role(role: RoleName) -> dict[str, Any]:
     }
 
 
-def _heuristic_route(user_input: str, session_ctx: dict) -> RouteDecision:
-    intent = classify_intent(user_input)
-    distance = estimate_distance(user_input, intent)
-    knowledge_mode = infer_knowledge_mode(user_input, intent, distance)
-    role = role_router(intent=intent, distance=distance, knowledge_mode=knowledge_mode, session_ctx=session_ctx)
-    return RouteDecision(
-        role=role,
-        knowledge_mode=knowledge_mode,
-        distance=distance,
-        routing_confidence="low",
-        reason="Fallback to heuristic router because the router agent was unavailable or invalid.",
-        required_context=[],
-        verification_need="none",
-        next_state="agent_execution",
-        used_fallback=True,
-        model_selection=model_selection_for_role(role),
-    )
-
-
 def _load_json_object(raw: str) -> dict:
     text = raw.strip()
-    try:
-        parsed = json.loads(text)
-    except JSONDecodeError as exc:
-        raise JSONDecodeError(exc.msg, exc.doc, exc.pos) from exc
-    if not isinstance(parsed, dict):
-        raise JSONDecodeError("Router output was not a JSON object.", text, 0)
-    return parsed
+    candidates = [text]
+
+    if "```" in text:
+        stripped = text.replace("```json", "```").replace("```JSON", "```")
+        candidates.extend(part.strip() for part in stripped.split("```") if part.strip())
+
+    first = text.find("{")
+    last = text.rfind("}")
+    if first != -1 and last != -1 and first < last:
+        candidates.append(text[first:last + 1].strip())
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise JSONDecodeError("No JSON object found in router output.", text, 0)
 
 
 def _normalize_router_payload(parsed: dict) -> RouterPayload:
@@ -263,47 +286,75 @@ def _normalize_router_payload(parsed: dict) -> RouterPayload:
     return RouterPayload.model_validate(normalized)
 
 
-def get_relevant_history(user_id: str, query_embedding: bytes, since_days: int = 30) -> dict:
+def get_relevant_history(
+    user_id: str,
+    query_embedding: bytes | None = None,
+    since_days: int = 30,
+    current_session_id: str | None = None,
+) -> dict[str, Any]:
     """Query session history for relevant context"""
+    if not user_id:
+        return {"recurring_themes": [], "uncaptured_themes": [], "related_sessions": []}
+
+    since_days = max(int(since_days), 1)
     conn = get_conn()
     cursor = conn.cursor()
-    
-    # Calculate the cutoff date
-    cursor.execute("""
-        SELECT datetime('now', '-? days')
-    """, (since_days,))
+
+    cursor.execute("SELECT datetime('now', ?)", (f"-{since_days} days",))
     cutoff_date = cursor.fetchone()[0]
-    
-    # Query session history for the user within the time period
-    cursor.execute("""
-        SELECT router_classification, user_query, generated_artefacts, citations_used, session_embedding
-        FROM session_history 
-        WHERE user_id = ? AND timestamp > ? 
+
+    params: list[Any] = [user_id, cutoff_date]
+    session_filter = ""
+    if current_session_id:
+        session_filter = "AND session_id != ?"
+        params.append(current_session_id)
+
+    cursor.execute(
+        f"""
+        SELECT session_id, session_title, router_classification, user_query,
+               generated_artefacts, citations_used, timestamp
+        FROM session_history
+        WHERE user_id = ? AND timestamp > ?
+        {session_filter}
         ORDER BY timestamp DESC
         LIMIT 10
-    """, (user_id, cutoff_date))
-    
+        """,
+        params,
+    )
+
     rows = cursor.fetchall()
-    
+
     # Process the results for recurring theme detection
     recurring_themes = []
     uncaptured_themes = []
-    
+    related_sessions: list[dict[str, Any]] = []
+
     for row in rows:
-        classification = json.loads(row[0]) if row[0] else {}
+        classification = json.loads(row["router_classification"]) if row["router_classification"] else {}
         if classification:
             # Extract potential recurring themes from previous classifications
-            seci_mode = classification.get("seci_mode", "")
-            reuse_situation = classification.get("reuse_situation", "")
-            
-            if seci_mode:
-                recurring_themes.append(seci_mode)
-            if reuse_situation:
-                recurring_themes.append(reuse_situation)
-    
+            for key in ("seci_mode", "knowledge_mode", "reuse_situation", "distance", "role"):
+                value = classification.get(key)
+                if value:
+                    recurring_themes.append(str(value))
+
+        artefacts = json.loads(row["generated_artefacts"]) if row["generated_artefacts"] else []
+        citations = json.loads(row["citations_used"]) if row["citations_used"] else []
+        related_sessions.append(
+            {
+                "session_id": row["session_id"],
+                "title": row["session_title"] or "Previous session",
+                "query": row["user_query"] or "",
+                "timestamp": row["timestamp"],
+                "generated_artefacts": artefacts[:5] if isinstance(artefacts, list) else [],
+                "citations_used": citations[:5] if isinstance(citations, list) else [],
+            }
+        )
+
     return {
         "recurring_themes": list(set(recurring_themes)),
-        "uncaptured_themes": list(set(uncaptured_themes))  # Placeholder for future logic
+        "uncaptured_themes": list(set(uncaptured_themes)),  # Placeholder for future logic
+        "related_sessions": related_sessions,
     }
 
 
@@ -323,41 +374,39 @@ def route_with_agent(
     session_ctx: dict | None = None,
 ) -> RouteDecision:
     session_ctx = session_ctx or {}
-    prompt = build_router_prompt(user_input, chat_history)
+    user_id = session_ctx.get("user_id")
+    session_insights = {"recurring_themes": [], "uncaptured_themes": [], "related_sessions": []}
+    if user_id:
+        session_insights = get_relevant_history(
+            user_id,
+            since_days=30,
+            current_session_id=session_ctx.get("session_id"),
+        )
+        session_ctx["session_insights"] = session_insights
 
-    try:
-        raw = backend.generate(
-            prompt,
-            system_prompt=ROUTER_SYSTEM_PROMPT,
-            temperature=0.0,
-            response_format={"type": "json_object"},
-        )
-        parsed = _load_json_object(raw)
-        payload = _normalize_router_payload(parsed)
-        
-        # NEW: Session context enrichment
-        user_id = session_ctx.get("user_id")
-        if user_id:
-            # Get relevant session history for context enrichment
-            session_insights = get_relevant_history(user_id, b"", 30)  # Simplified embedding for now
-            
-            # Apply enrichment to the payload if needed
-            if session_insights["recurring_themes"]:
-                # Add extra fields to the payload for FSM use
-                payload.detected_themes = session_insights["recurring_themes"]
-                payload.knowledge_gaps = session_insights["uncaptured_themes"]
-        
-        return RouteDecision(
-            role=payload.selected_agent,
-            knowledge_mode=SECI_TO_KNOWLEDGE_MODE[payload.seci_mode],
-            distance=REUSE_TO_DISTANCE[payload.reuse_situation],
-            routing_confidence=payload.routing_confidence,
-            reason=payload.reason,
-            required_context=payload.required_context,
-            verification_need=payload.verification_need,
-            next_state=payload.next_state,
-            used_fallback=False,
-            model_selection=model_selection_for_role(payload.selected_agent),
-        )
-    except Exception:
-        return _heuristic_route(user_input, session_ctx)
+    prompt = build_router_prompt(user_input, chat_history, session_insights=session_insights)
+
+    raw = backend.generate(
+        prompt,
+        system_prompt=ROUTER_SYSTEM_PROMPT,
+        temperature=0.0,
+        response_format={"type": "json_object"},
+    )
+    parsed = _load_json_object(raw)
+    payload = _normalize_router_payload(parsed)
+
+    return RouteDecision(
+        role=payload.selected_agent,
+        knowledge_mode=SECI_TO_KNOWLEDGE_MODE[payload.seci_mode],
+        distance=REUSE_TO_DISTANCE[payload.reuse_situation],
+        routing_confidence=payload.routing_confidence,
+        reason=payload.reason,
+        required_context=payload.required_context,
+        verification_need=payload.verification_need,
+        next_state=payload.next_state,
+        used_fallback=False,
+        model_selection=model_selection_for_role(payload.selected_agent),
+        detected_themes=session_insights.get("recurring_themes", []),
+        knowledge_gaps=session_insights.get("uncaptured_themes", []),
+        related_sessions=session_insights.get("related_sessions", []),
+    )

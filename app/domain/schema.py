@@ -59,6 +59,9 @@ class RouterDebug(BaseModel):
     verification_need: str
     next_state: str
     used_fallback: bool
+    detected_themes: list[str] = Field(default_factory=list)
+    knowledge_gaps: list[str] = Field(default_factory=list)
+    related_sessions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AssistantPayload(BaseModel):

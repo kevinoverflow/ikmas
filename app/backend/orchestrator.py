@@ -4,9 +4,7 @@ import json
 from typing import Any
 
 from app.domain.types import TurnRecord
-from app.backend import sqlite_store
-from app.backend.intent_distance import classify_intent
-from app.backend.router_agent import route_with_agent, get_relevant_history
+from app.backend.router_agent import route_with_agent
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
 from app.infrastructure.tracing import traceable
@@ -26,11 +24,54 @@ from app.infrastructure.config import (
 )
 
 
-def _chat_backend(model_name: str | None = None):
-    try:
-        return OpenAIChatBackend(model_name=model_name)
-    except TypeError:
-        return OpenAIChatBackend()
+class LLMBackendProvider:
+    def __init__(self):
+        self._backends: dict[str | None, OpenAIChatBackend] = {}
+
+    def get(self, model_name: str | None = None) -> OpenAIChatBackend:
+        if model_name not in self._backends:
+            try:
+                self._backends[model_name] = OpenAIChatBackend(model_name=model_name)
+            except TypeError:
+                self._backends[model_name] = OpenAIChatBackend()
+        return self._backends[model_name]
+
+
+class DBProvider:
+    def __init__(self):
+        self._initialized = False
+
+    def init(self) -> None:
+        if not self._initialized:
+            init_db()
+            self._initialized = True
+
+    def connect(self):
+        return get_conn()
+
+    def create_session(self, session_id: str) -> None:
+        self.init()
+        create_session(session_id)
+
+    def log_turn(self, turn: TurnRecord) -> None:
+        self.init()
+        log_turn(turn)
+
+    def save_artefacts(self, artefacts: list[dict], project: str, refs: list[dict]) -> list[int]:
+        self.init()
+        return save_artefacts(artefacts=artefacts, project=project, refs=refs)
+
+
+ROLE_TO_INTENT = {
+    "ScribeAgent": "project_specific",
+    "SemanticLinkingAgent": "pattern_mining",
+    "MentorAgent": "what_is",
+    "ContextReconstructorAgent": "cross_context",
+}
+
+
+def intent_for_route(role: str) -> str:
+    return ROLE_TO_INTENT.get(role, "what_is")
 
 
 def build_session_title(user_input: str, max_chars: int = 48) -> str:
@@ -51,14 +92,17 @@ def store_session_history(
     router_classification: Any,
     generated_artefacts: list,
     citations_used: list,
-    user_feedback: dict | None = None
+    user_feedback: dict | None = None,
+    db_provider: DBProvider | None = None,
 ) -> None:
     """Store session information for future routing decisions"""
-    sqlite_store.init_db()
-    conn = get_conn()
+    provider = db_provider or DBProvider()
+    conn = provider.connect()
     with conn:
         # Convert router_classification to dict if it's an object
-        if hasattr(router_classification, '__dict__'):
+        if hasattr(router_classification, "model_dump"):
+            classification_dict = router_classification.model_dump()
+        elif hasattr(router_classification, '__dict__'):
             classification_dict = router_classification.__dict__
         elif isinstance(router_classification, dict):
             classification_dict = router_classification
@@ -104,12 +148,12 @@ def store_session_history(
 
 def build_session_ctx(session_id: str, user_id: str | None = None) -> dict[str, Any]:
     """
-    Placeholder for future session restoration.
-    For now, returns an authenticated user context when available.
+    Build the active context used by routing, FSM transitions, and prompts.
     """
+    context: dict[str, Any] = {"session_id": session_id}
     if user_id:
-        return build_user_profile(user_id)
-    return {}
+        context.update(build_user_profile(user_id))
+    return context
 
 
 def build_user_profile(user_id: str | None) -> dict[str, Any]:
@@ -130,6 +174,7 @@ def build_prompt(
     knowledge_mode: str,
     confidence: float,
     chat_history: list[dict[str, str]] | None = None,
+    session_ctx: dict[str, Any] | None = None,
 ) -> str:
     schema_example = {
         "role": role,
@@ -176,6 +221,7 @@ def build_prompt(
             history_lines.append(f"Assistant: {assistant_turn}")
 
     history_block = "\n".join(history_lines) if history_lines else "(keine bisherige Unterhaltung)"
+    session_context_block = format_session_context_for_prompt(session_ctx or {})
 
     return f"""
 Du bist {role}.
@@ -217,6 +263,9 @@ Kontext:
 - confidence: {confidence:.3f}
 - state: {state}
 
+Session Context:
+{session_context_block}
+
 Rollenanweisung:
 {role_instructions}
 
@@ -232,6 +281,34 @@ Retrieved Context:
 Beispiel für die Zielstruktur:
 {json.dumps(schema_example, ensure_ascii=False)}
 """.strip()
+
+
+def format_session_context_for_prompt(session_ctx: dict[str, Any]) -> str:
+    session_insights = session_ctx.get("session_insights") or {}
+    detected_themes = session_ctx.get("detected_themes") or session_insights.get("recurring_themes", [])
+    knowledge_gaps = session_ctx.get("knowledge_gaps") or session_insights.get("uncaptured_themes", [])
+    related_sessions = session_ctx.get("related_sessions") or session_insights.get("related_sessions", [])
+
+    if not detected_themes and not knowledge_gaps and not related_sessions:
+        return "(keine relevanten früheren Sessions gefunden)"
+
+    lines = [
+        "Nutze diese Session-Hinweise als Kontext, nicht als Ersatz für die aktuelle Anfrage.",
+    ]
+    if detected_themes:
+        lines.append("Wiederkehrende Themen: " + ", ".join(str(theme) for theme in detected_themes[:8]))
+    if knowledge_gaps:
+        lines.append("Bekannte Wissenslücken: " + ", ".join(str(gap) for gap in knowledge_gaps[:8]))
+    if related_sessions:
+        lines.append("Relevante frühere Sessions:")
+        for session in related_sessions[:3]:
+            title = str(session.get("title") or "Previous session").strip()
+            query = str(session.get("query") or "").strip()
+            artefacts = session.get("generated_artefacts") or []
+            artefact_text = ", ".join(str(item) for item in artefacts[:3]) if artefacts else "keine"
+            lines.append(f"- {title}: {query} | Artefakte: {artefact_text}")
+
+    return "\n".join(lines)
 
 
 def merge_citations(
@@ -288,18 +365,18 @@ def handle_turn(
     9. persist turn + artefacts
     10. return schema-valid payload
     """
-    init_db()
-    create_session(session_id)
+    db_provider = DBProvider()
+    db_provider.init()
+    db_provider.create_session(session_id)
+    backend_provider = LLMBackendProvider()
 
     if user_id and collection_name == "default":
         collection_name = user_workspace_id(user_id)
 
     session_ctx = build_session_ctx(session_id, user_id)
 
-    intent = classify_intent(user_input)
-
     # Route the request first to determine the agent role
-    backend = _chat_backend(ROUTER_MODEL_NAME)
+    backend = backend_provider.get(ROUTER_MODEL_NAME)
     route = route_with_agent(
         backend,
         user_input=user_input,
@@ -309,6 +386,11 @@ def handle_turn(
     distance = route.distance
     knowledge_mode = route.knowledge_mode
     role = route.role
+    intent = intent_for_route(role)
+
+    session_ctx["detected_themes"] = getattr(route, "detected_themes", [])
+    session_ctx["knowledge_gaps"] = getattr(route, "knowledge_gaps", [])
+    session_ctx["related_sessions"] = getattr(route, "related_sessions", [])
     
     # Store session history after routing (before executing the agent)
     # This ensures we have context for the next request
@@ -318,7 +400,8 @@ def handle_turn(
         user_input=user_input,
         router_classification=route,
         generated_artefacts=[],
-        citations_used=[]
+        citations_used=[],
+        db_provider=db_provider,
     )
     
     # Use model selection information from router if available
@@ -342,7 +425,7 @@ def handle_turn(
             model_name = LLM_MODEL_NAME
     
     # Now create the backend with the appropriate model
-    backend = _chat_backend(model_name)
+    backend = backend_provider.get(model_name)
 
     retrieval = run_retrieval(
         query=user_input,
@@ -359,12 +442,6 @@ def handle_turn(
         force_tutor_mode=False,
     )
 
-    # Pass session history insights to FSM if available
-    if hasattr(route, 'detected_themes'):
-        session_ctx['detected_themes'] = route.detected_themes
-    if hasattr(route, 'knowledge_gaps'):
-        session_ctx['knowledge_gaps'] = route.knowledge_gaps
-
     prompt = build_prompt(
         user_input=user_input,
         role=role,
@@ -376,6 +453,7 @@ def handle_turn(
         knowledge_mode=knowledge_mode,
         confidence=confidence,
         chat_history=chat_history,
+        session_ctx=session_ctx,
     )
 
     client = LLMClient(backend)
@@ -407,6 +485,9 @@ def handle_turn(
         "verification_need": route.verification_need,
         "next_state": route.next_state,
         "used_fallback": route.used_fallback,
+        "detected_themes": getattr(route, "detected_themes", []),
+        "knowledge_gaps": getattr(route, "knowledge_gaps", []),
+        "related_sessions": getattr(route, "related_sessions", []),
     }
     payload["citations"] = merge_citations(payload["citations"], retrieval["chunks"])
 
@@ -435,7 +516,7 @@ def handle_turn(
             ensure_ascii=False,
         ),
     )
-    log_turn(turn)
+    db_provider.log_turn(turn)
 
     # Store session history for future routing
     generated_artefacts = [a["title"] for a in payload["artefacts"]] if payload["artefacts"] else []
@@ -446,7 +527,8 @@ def handle_turn(
         user_input=user_input,
         router_classification=route,
         generated_artefacts=generated_artefacts,
-        citations_used=citations_used
+        citations_used=citations_used,
+        db_provider=db_provider,
     )
 
     if payload["artefacts"]:
@@ -454,7 +536,7 @@ def handle_turn(
             {"ref_type": "chunk", "ref_id": chunk["chunk_id"]}
             for chunk in retrieval["chunks"][:5]
         ]
-        save_artefacts(
+        db_provider.save_artefacts(
             artefacts=payload["artefacts"],
             project=collection_name,
             refs=refs,
