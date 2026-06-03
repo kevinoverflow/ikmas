@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from app.domain.types import TurnRecord
+from app.backend.db_provider import DBProvider
 from app.backend.router_agent import route_with_agent
 from app.backend.fsm import decide_state
 from app.backend.retrieval import run_retrieval
@@ -24,42 +25,11 @@ from app.infrastructure.config import (
 )
 
 
-class LLMBackendProvider:
-    def __init__(self):
-        self._backends: dict[str | None, OpenAIChatBackend] = {}
-
-    def get(self, model_name: str | None = None) -> OpenAIChatBackend:
-        if model_name not in self._backends:
-            try:
-                self._backends[model_name] = OpenAIChatBackend(model_name=model_name)
-            except TypeError:
-                self._backends[model_name] = OpenAIChatBackend()
-        return self._backends[model_name]
-
-
-class DBProvider:
-    def __init__(self):
-        self._initialized = False
-
-    def init(self) -> None:
-        if not self._initialized:
-            init_db()
-            self._initialized = True
-
-    def connect(self):
-        return get_conn()
-
-    def create_session(self, session_id: str) -> None:
-        self.init()
-        create_session(session_id)
-
-    def log_turn(self, turn: TurnRecord) -> None:
-        self.init()
-        log_turn(turn)
-
-    def save_artefacts(self, artefacts: list[dict], project: str, refs: list[dict]) -> list[int]:
-        self.init()
-        return save_artefacts(artefacts=artefacts, project=project, refs=refs)
+def create_chat_backend(model_name: str | None = None):
+    try:
+        return OpenAIChatBackend(model_name=model_name)
+    except TypeError:
+        return OpenAIChatBackend()
 
 
 ROLE_TO_INTENT = {
@@ -365,10 +335,15 @@ def handle_turn(
     9. persist turn + artefacts
     10. return schema-valid payload
     """
-    db_provider = DBProvider()
+    db_provider = DBProvider(
+        init_db_fn=init_db,
+        get_conn_fn=get_conn,
+        create_session_fn=create_session,
+        log_turn_fn=log_turn,
+        save_artefacts_fn=save_artefacts,
+    )
     db_provider.init()
     db_provider.create_session(session_id)
-    backend_provider = LLMBackendProvider()
 
     if user_id and collection_name == "default":
         collection_name = user_workspace_id(user_id)
@@ -376,9 +351,9 @@ def handle_turn(
     session_ctx = build_session_ctx(session_id, user_id)
 
     # Route the request first to determine the agent role
-    backend = backend_provider.get(ROUTER_MODEL_NAME)
+    router_backend = create_chat_backend(ROUTER_MODEL_NAME)
     route = route_with_agent(
-        backend,
+        router_backend,
         user_input=user_input,
         chat_history=chat_history,
         session_ctx=session_ctx,
@@ -425,7 +400,7 @@ def handle_turn(
             model_name = LLM_MODEL_NAME
     
     # Now create the backend with the appropriate model
-    backend = backend_provider.get(model_name)
+    backend = router_backend if model_name == ROUTER_MODEL_NAME else create_chat_backend(model_name)
 
     retrieval = run_retrieval(
         query=user_input,
