@@ -34,6 +34,7 @@ Related system views:
 - [Roles](./roles.md)
 - [Intent + Distance](./intent_distance.md)
 - [Retrieval](./retrieval.md)
+- [File Handling](./file_handling.md)
 - [LLM / JSON Handling](./llm.md)
 - [Schema](./schema.md)
 - [Architecture](./architecture.md)
