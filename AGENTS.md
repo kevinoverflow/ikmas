@@ -19,6 +19,16 @@ pip install -r requirements.txt             # Manual dependency install
 streamlit run app/ui/streamlit_app.py       # Run UI directly
 ```
 
+## File Workspace Implementation
+
+The file workspace is implemented with native Streamlit controls in `app/ui/files.py`.
+
+- Files are listed from `app.rag.storage.list_collection_files(...)`.
+- Uploads go through `app.rag.storage.save_upload(...)` for deduplication and conflict handling.
+- Downloads use per-file `st.download_button(...)` controls.
+- Deletes use `app.rag.storage.delete_file(...)`.
+- The UI does not depend on a third-party file browser component.
+
 ---
 
 ## Environment Setup
