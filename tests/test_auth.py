@@ -39,3 +39,36 @@ def test_auth_migrates_existing_users_table(tmp_path, monkeypatch):
     user = auth.create_user("Grace Hopper", "grace@example.com", "password123")
 
     assert auth.authenticate_user("grace@example.com", "password123") == user
+
+
+def test_auth_session_round_trip_stores_only_token_hash(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite_store, "DB_PATH", tmp_path / "ikmas.db")
+    user = auth.create_user("Katherine Johnson", "katherine@example.com", "password123")
+
+    raw_token = auth.create_auth_session(user.user_id)
+    restored = auth.authenticate_session_token(raw_token)
+
+    assert restored == user
+    with sqlite_store.get_conn() as conn:
+        row = conn.execute("SELECT token_hash FROM auth_sessions").fetchone()
+
+    assert row["token_hash"] == auth.hash_session_token(raw_token)
+    assert row["token_hash"] != raw_token
+
+
+def test_auth_session_rejects_revoked_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite_store, "DB_PATH", tmp_path / "ikmas.db")
+    user = auth.create_user("Dorothy Vaughan", "dorothy@example.com", "password123")
+    raw_token = auth.create_auth_session(user.user_id)
+
+    auth.revoke_auth_session(raw_token)
+
+    assert auth.authenticate_session_token(raw_token) is None
+
+
+def test_auth_session_rejects_expired_token(tmp_path, monkeypatch):
+    monkeypatch.setattr(sqlite_store, "DB_PATH", tmp_path / "ikmas.db")
+    user = auth.create_user("Mary Jackson", "mary@example.com", "password123")
+    raw_token = auth.create_auth_session(user.user_id, ttl_days=-1)
+
+    assert auth.authenticate_session_token(raw_token) is None

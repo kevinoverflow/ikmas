@@ -1,9 +1,20 @@
 import uuid
 import json
+from datetime import UTC, datetime, timedelta
+from http.cookies import SimpleCookie
 
 import streamlit as st
+import streamlit.components.v1 as components
 
-from app.backend.auth import AuthError, authenticate_user, create_user
+from app.backend.auth import (
+    REMEMBER_ME_TTL_DAYS,
+    AuthError,
+    authenticate_session_token,
+    authenticate_user,
+    create_auth_session,
+    create_user,
+    revoke_auth_session,
+)
 from app.backend.llm_client import get_client
 from app.backend.orchestrator import handle_turn
 from app.backend.router_agent import model_selection_for_role
@@ -19,6 +30,7 @@ from app.rag.storage import (
 from app.rag.vectorstore import add_docs, clear_collection
 
 LOGICAL_COLLECTION_ID = "default"
+AUTH_COOKIE_NAME = "ikmas_auth_token"
 
 st.set_page_config(page_title="IKMAS", layout="centered")
 st.title("Intelligent Knowledge Management Assistance System")
@@ -37,19 +49,101 @@ if "docs_indexed" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 
+if "auth_cookie_checked" not in st.session_state:
+    st.session_state.auth_cookie_checked = False
 
-def _set_authenticated_user(user) -> None:
+if "pending_auth_cookie" not in st.session_state:
+    st.session_state.pending_auth_cookie = None
+
+if "pending_auth_cookie_delete" not in st.session_state:
+    st.session_state.pending_auth_cookie_delete = False
+
+
+def _set_authenticated_user(user, *, reset_chat: bool = True) -> None:
     st.session_state.auth_user = {
         "id": user.user_id,
         "name": user.name,
         "email": user.email,
     }
-    st.session_state.session_id = str(uuid.uuid4())
-    st.session_state.chat_history = []
+    if reset_chat:
+        st.session_state.session_id = str(uuid.uuid4())
+        st.session_state.chat_history = []
+
+
+def _get_auth_cookie() -> str | None:
+    return st.context.cookies.get(AUTH_COOKIE_NAME)
+
+
+def _set_auth_cookie(raw_token: str) -> None:
+    st.session_state.pending_auth_cookie = raw_token
+
+
+def _render_set_auth_cookie(raw_token: str) -> None:
+    expires_at = datetime.now(UTC) + timedelta(days=REMEMBER_ME_TTL_DAYS)
+    cookie = SimpleCookie()
+    cookie[AUTH_COOKIE_NAME] = raw_token
+    cookie[AUTH_COOKIE_NAME]["path"] = "/"
+    cookie[AUTH_COOKIE_NAME]["expires"] = expires_at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+    cookie[AUTH_COOKIE_NAME]["samesite"] = "Strict"
+    components.html(
+        f"<script>document.cookie = {json.dumps(cookie.output(header='').strip())};</script>",
+        height=0,
+    )
+
+
+def _delete_auth_cookie() -> None:
+    st.session_state.pending_auth_cookie_delete = True
+
+
+def _render_delete_auth_cookie() -> None:
+    components.html(
+        (
+            "<script>"
+            f"document.cookie = {json.dumps(f'{AUTH_COOKIE_NAME}=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict')};"
+            "</script>"
+        ),
+        height=0,
+    )
+
+
+def _render_pending_cookie_operations() -> None:
+    raw_token = st.session_state.pending_auth_cookie
+    if raw_token:
+        _render_set_auth_cookie(raw_token)
+        st.session_state.pending_auth_cookie = None
+
+    if st.session_state.pending_auth_cookie_delete:
+        _render_delete_auth_cookie()
+        st.session_state.pending_auth_cookie_delete = False
+
+
+def _restore_authenticated_user_from_cookie() -> None:
+    if st.session_state.auth_user or st.session_state.auth_cookie_checked:
+        return
+
+    st.session_state.auth_cookie_checked = True
+    raw_token = _get_auth_cookie()
+    if not raw_token:
+        return
+
+    user = authenticate_session_token(raw_token)
+    if user is None:
+        _delete_auth_cookie()
+        return
+
+    _set_authenticated_user(user, reset_chat=False)
+    st.rerun()
+
+
+_render_pending_cookie_operations()
 
 
 def _logout() -> None:
+    raw_token = _get_auth_cookie()
+    revoke_auth_session(raw_token)
+    _delete_auth_cookie()
     st.session_state.auth_user = None
+    st.session_state.auth_cookie_checked = False
     st.session_state.session_id = str(uuid.uuid4())
     st.session_state.chat_history = []
     st.rerun()
@@ -80,6 +174,8 @@ def _load_session_chat_history(session_id: str, user_id: str) -> list[dict]:
 
 
 def render_auth_workflow() -> bool:
+    _restore_authenticated_user_from_cookie()
+
     if st.session_state.auth_user:
         return True
 
@@ -90,6 +186,7 @@ def render_auth_workflow() -> bool:
         with st.form("login_form"):
             email = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
+            remember_me = st.checkbox("Remember me", value=False, key="login_remember_me")
             submitted = st.form_submit_button("Login", type="primary")
 
         if submitted:
@@ -98,6 +195,8 @@ def render_auth_workflow() -> bool:
                 st.error("Invalid email or password.")
             else:
                 _set_authenticated_user(user)
+                if remember_me:
+                    _set_auth_cookie(create_auth_session(user.user_id))
                 st.success(f"Welcome back, {user.name}.")
                 st.rerun()
 
@@ -428,6 +527,20 @@ def render_router_debug(router_debug):
             st.markdown("**Required context**")
             for item in required_context:
                 st.markdown(f"- {item}")
+
+        detected_themes = router_debug.get("detected_themes", [])
+        knowledge_gaps = router_debug.get("knowledge_gaps", [])
+        related_sessions = router_debug.get("related_sessions", [])
+        if detected_themes or knowledge_gaps or related_sessions:
+            st.markdown("**Session context**")
+            if detected_themes:
+                st.caption("Themes: " + ", ".join(detected_themes[:8]))
+            if knowledge_gaps:
+                st.caption("Knowledge gaps: " + ", ".join(knowledge_gaps[:8]))
+            for session in related_sessions[:3]:
+                title = session.get("title") or "Previous session"
+                query = session.get("query") or ""
+                st.markdown(f"- **{title}**: {query}")
 
 
 # Chat
