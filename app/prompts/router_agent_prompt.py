@@ -17,6 +17,13 @@ ROUTER_SYSTEM_PROMPT = """
     - Expertise-Seeking Novice: the user needs support understanding expert knowledge outside their expertise
     - Secondary Knowledge Miner: the user reuses knowledge for a different purpose or from a distant context
     
+    Session Context:
+    - Recurring themes identified from previous interactions: {recurring_themes}
+    - Uncaptured knowledge gaps from past sessions: {uncaptured_themes}
+    - Related past sessions: {related_sessions}
+    
+    Consider the session context when making your classification. If the user's request relates to recurring themes or uncaptured knowledge gaps, adjust your routing accordingly.
+    
     Select exactly one agent from the available registry.
     Use these exact output conventions:
     - seci_mode must be one of: Socialization, Externalization, Combination, Internalization

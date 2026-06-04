@@ -15,15 +15,29 @@ def decide_state(
     user_id = session_ctx.get("user_id")
     
     # If we have user context and knowledge gaps from session history, adjust the state
-    if user_id and "knowledge_gaps" in session_ctx:
-        knowledge_gaps = session_ctx["knowledge_gaps"]
-        if knowledge_gaps:
-            # For example, if we detect recurring knowledge gaps, 
-            # we may want to prioritize externalization agents
-            if role in ["ScribeAgent", "SemanticLinkingAgent", "ContextReconstructorAgent"]:
-                # These are good candidates for addressing knowledge gaps
-                # We could potentially modify the FSM to route differently here
-                pass
+    if user_id:
+        # Check for recurring themes that might influence routing decisions
+        detected_themes = session_ctx.get("detected_themes", [])
+        knowledge_gaps = session_ctx.get("knowledge_gaps", [])
+        related_sessions = session_ctx.get("related_sessions", [])
+        
+        # If we have knowledge gaps, prioritize agents that can address them
+        if knowledge_gaps and role in ["ScribeAgent", "SemanticLinkingAgent", "ContextReconstructorAgent"]:
+            # These are good candidates for addressing knowledge gaps
+            # Adjust routing to focus on externalization or combination agents
+            # This is a simplified approach - in a real implementation, we'd 
+            # analyze the specific gaps and route accordingly
+            pass
+            
+        # If we have recurring themes, consider routing to agents that might leverage this
+        if detected_themes and role in ["ScribeAgent", "SemanticLinkingAgent", "ContextReconstructorAgent"]:
+            # Adjust state to leverage previously identified themes
+            pass
+            
+        # If we have related sessions, consider them for context enrichment
+        if related_sessions and role in ["ScribeAgent", "SemanticLinkingAgent", "ContextReconstructorAgent"]:
+            # Use related sessions to enrich the current request context
+            pass
     
     # Continue with existing FSM logic
     if role != "TutoringAgent" and not force_tutor_mode:

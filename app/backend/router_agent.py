@@ -127,6 +127,11 @@ def build_router_prompt(
     history_block = "\n".join(history_lines) if history_lines else "(no prior conversation)"
     session_insights = session_insights or {}
 
+    # Prepare session context for injection into system prompt
+    recurring_themes = ", ".join(session_insights.get("recurring_themes", []))
+    uncaptured_themes = ", ".join(session_insights.get("uncaptured_themes", []))
+    related_sessions = json.dumps(session_insights.get("related_sessions", []), ensure_ascii=False)
+
     return json.dumps(
         {
             "available_agents": AGENT_REGISTRY,
@@ -362,7 +367,34 @@ def get_session_similarity_score(user_id: str, query_text: str, since_days: int 
     """Calculate similarity score between current query and session history"""
     # This is a simplified implementation - in a real system we'd compute actual embeddings
     # and compare them for similarity
-    return 0.0
+    # For now, we'll use a basic text similarity approach
+    import difflib
+    
+    # Get session history
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT datetime('now', ?)", (f"-{since_days} days",))
+    cutoff_date = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT user_query FROM session_history WHERE user_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+        (user_id, cutoff_date)
+    )
+    
+    rows = cursor.fetchall()
+    
+    if not rows:
+        return 0.0
+    
+    # Calculate similarity with the most recent session
+    most_recent_query = rows[0]['user_query'] if rows else ''
+    if not most_recent_query:
+        return 0.0
+        
+    # Use difflib for basic text similarity
+    similarity = difflib.SequenceMatcher(None, query_text.lower(), most_recent_query.lower()).ratio()
+    return float(similarity)
 
 
 @traceable(name="router_agent_route", run_type="chain")
@@ -384,11 +416,24 @@ def route_with_agent(
         )
         session_ctx["session_insights"] = session_insights
 
-    prompt = build_router_prompt(user_input, chat_history, session_insights=session_insights)
+    # Build prompt with session context
+    prompt_data = build_router_prompt(user_input, chat_history, session_insights=session_insights)
+    
+    # Inject session context into system prompt
+    from app.prompts.router_agent_prompt import ROUTER_SYSTEM_PROMPT
+    recurring_themes = ", ".join(session_insights.get("recurring_themes", []))
+    uncaptured_themes = ", ".join(session_insights.get("uncaptured_themes", []))
+    related_sessions = json.dumps(session_insights.get("related_sessions", []), ensure_ascii=False)
+    
+    formatted_system_prompt = ROUTER_SYSTEM_PROMPT.format(
+        recurring_themes=recurring_themes,
+        uncaptured_themes=uncaptured_themes,
+        related_sessions=related_sessions
+    )
 
     raw = backend.generate(
-        prompt,
-        system_prompt=ROUTER_SYSTEM_PROMPT,
+        prompt_data,
+        system_prompt=formatted_system_prompt,
         temperature=0.0,
         response_format={"type": "json_object"},
     )
