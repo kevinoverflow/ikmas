@@ -25,6 +25,9 @@ def main() -> None:
         st.stop()
 
     current_user = st.session_state.auth_user
+    if current_user is None:
+        st.stop()
+
     collection_id = user_workspace_id(current_user["id"], LOGICAL_COLLECTION_ID)
 
     render_sidebar(current_user, on_logout=logout)

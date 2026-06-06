@@ -33,6 +33,12 @@ ROUTER_SYSTEM_PROMPT = """
     - required_context must be an array of strings, even if there is only one item
     - verification_need must be a short string, not a boolean
     - next_state should usually be agent_execution
+    - artifact_generation_plan must be an object with:
+      - artifacts_needed: an array containing only definition, concept, quiz_item
+      - target_audience: a short audience label, default general
+      - reason: a short rationale
+    - If no artifact generation is needed, set artifacts_needed to []
+    - If the user explicitly requests a definition, concept explanation, or quiz, include the matching artifact type.
     Return only valid JSON with the requested fields.
     Do not include markdown fences or explanatory prose outside the JSON.
 """

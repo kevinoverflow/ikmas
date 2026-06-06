@@ -262,6 +262,167 @@ def test_handle_turn_saves_artefacts_in_selected_collection(monkeypatch):
     assert seen["refs"] == [{"ref_type": "chunk", "ref_id": "chunk-7"}]
 
 
+def test_handle_turn_appends_subagent_artifacts_and_persists_combined_artefacts(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    monkeypatch.setattr(orchestrator, "run_retrieval", lambda **kwargs: {
+        "chunks": [],
+        "top1": 0.0,
+        "avg_top3": 0.0,
+        "coverage": 0.0,
+        "confidence": 0.0,
+    })
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="MentorAgent",
+            knowledge_mode="INTERNALIZATION",
+            distance="ESN",
+            routing_confidence="high",
+            reason="learning support",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+            artifact_generation_plan={
+                "artifacts_needed": ["definition"],
+                "target_audience": "novice",
+                "reason": "Definition requested.",
+            },
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda: object())
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: seen.setdefault("history", kwargs))
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload(
+                artefacts=[
+                    {
+                        "type": "summary",
+                        "title": "Main Recap",
+                        "content": "Main agent artifact",
+                        "concept_ids": [],
+                    }
+                ]
+            )
+
+    class FakeCoordinator:
+        def spawn_subagent(self, agent_type, request):
+            seen["request"] = request
+            return "subagent-1"
+
+        def execute_subagent(self, subagent_id, backend):
+            return SimpleNamespace(
+                artifact_type=SimpleNamespace(value="definition"),
+                content="Generated definition",
+                metadata={"audience_level": "novice"},
+                confidence=0.9,
+            )
+
+    def fake_save_artefacts(artefacts, project, refs):
+        seen["saved_artefacts"] = artefacts
+        seen["project"] = project
+        return [1, 2]
+
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "subagent_coordinator", FakeCoordinator())
+    monkeypatch.setattr(orchestrator, "save_artefacts", fake_save_artefacts)
+
+    payload = orchestrator.handle_turn(
+        session_id="session-artifacts",
+        user_input="Bitte gib mir eine Definition.",
+        collection_name="team-space",
+    )
+
+    assert [artefact["type"] for artefact in payload["artefacts"]] == ["summary", "definition"]
+    assert payload["artefacts"][1]["title"] == "Definition"
+    assert payload["artefacts"][1]["content"] == "Generated definition"
+    assert payload["router_debug"]["generated_artifacts"][0]["type"] == "definition"
+    assert payload["router_debug"]["artifact_generation_errors"] == []
+    assert seen["request"].target_audience == "novice"
+    assert [artefact["title"] for artefact in seen["saved_artefacts"]] == ["Main Recap", "Definition"]
+    assert seen["history"]["generated_artefacts"] == ["Main Recap", "Definition"]
+    assert seen["project"] == "team-space"
+
+
+def test_handle_turn_keeps_main_answer_when_subagent_fails(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    monkeypatch.setattr(orchestrator, "run_retrieval", lambda **kwargs: {
+        "chunks": [],
+        "top1": 0.0,
+        "avg_top3": 0.0,
+        "coverage": 0.0,
+        "confidence": 0.0,
+    })
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="MentorAgent",
+            knowledge_mode="INTERNALIZATION",
+            distance="ESN",
+            routing_confidence="high",
+            reason="learning support",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+            artifact_generation_plan={
+                "artifacts_needed": ["quiz_item"],
+                "target_audience": "general",
+                "reason": "Quiz requested.",
+            },
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda: object())
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: None)
+    monkeypatch.setattr(orchestrator, "save_artefacts", lambda *args, **kwargs: seen.setdefault("saved", True))
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload()
+
+    class FailingCoordinator:
+        def spawn_subagent(self, agent_type, request):
+            return "subagent-1"
+
+        def execute_subagent(self, subagent_id, backend):
+            raise RuntimeError("quiz failed")
+
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "subagent_coordinator", FailingCoordinator())
+
+    payload = orchestrator.handle_turn(
+        session_id="session-failure",
+        user_input="Mach ein Quiz.",
+        collection_name="team-space",
+    )
+
+    assert payload["assistant_message"] == "Antwort"
+    assert payload["artefacts"] == []
+    assert payload["router_debug"]["artifact_generation_errors"] == [
+        {"type": "quiz_item", "error": "quiz failed"}
+    ]
+    assert "saved" not in seen
+
+
 def test_handle_turn_scopes_default_collection_for_authenticated_user(monkeypatch):
     seen = {}
 

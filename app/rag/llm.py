@@ -24,6 +24,7 @@ class OpenAIChatBackend:
         system_prompt: str = "Return exactly the requested output.",
         temperature: float = 0.2,
         response_format: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> str:
         request: dict[str, Any] = {
             "model": self.model_name,
@@ -35,6 +36,8 @@ class OpenAIChatBackend:
         }
         if response_format is not None:
             request["response_format"] = response_format
+        if max_tokens is not None:
+            request["max_tokens"] = max_tokens
 
         response = self.client.chat.completions.create(**request)
 

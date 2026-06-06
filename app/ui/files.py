@@ -192,7 +192,7 @@ def _render_file_row(collection_id: str, stored_file: StoredFile) -> None:
         file_col.markdown(_format_file_summary(stored_file), unsafe_allow_html=True)
 
         download_col.download_button(
-            "",
+            "Download",
             data=_read_file_bytes(stored_file.path),
             file_name=stored_file.original_name,
             mime="application/octet-stream",
@@ -202,7 +202,7 @@ def _render_file_row(collection_id: str, stored_file: StoredFile) -> None:
         )
 
         if delete_col.button(
-            "",
+            "Remove",
             key=f"delete_{collection_id}_{stored_file.sha256}",
             icon=":material/delete:",
             use_container_width=True,

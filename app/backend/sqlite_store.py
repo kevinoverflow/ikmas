@@ -218,3 +218,34 @@ def upsert_user_knowledge(
             DO UPDATE SET mastery = excluded.mastery,
                           next_review = excluded.next_review
         """, (user_id, concept_id, mastery, next_review))
+
+def store_session_history(
+    session_id: str,
+    user_id: str,
+    user_input: str,
+    router_classification: dict,
+    generated_artefacts: list[str],
+    citations_used: list[str],
+    db_provider
+) -> None:
+    """Store session history for future routing and context."""
+    import json
+    
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO session_history(
+                session_id, user_id, session_title, timestamp, 
+                router_classification, user_query, generated_artefacts, 
+                citations_used, user_feedback, session_embedding
+            ) VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            user_id,
+            f"Session {session_id}",
+            json.dumps(router_classification),
+            user_input,
+            json.dumps(generated_artefacts),
+            json.dumps(citations_used),
+            json.dumps({}),  # Empty feedback initially
+            None  # No embedding initially
+        ))

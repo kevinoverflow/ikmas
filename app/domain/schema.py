@@ -19,7 +19,17 @@ class Question(BaseModel):
 
 class Artefact(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    type: Literal["summary", "flashcards", "quiz", "checklist", "note", "concept_map"]
+    type: Literal[
+        "summary",
+        "flashcards",
+        "quiz",
+        "checklist",
+        "note",
+        "concept_map",
+        "definition",
+        "concept",
+        "quiz_item",
+    ]
     title: str
     content: str
     concept_ids: list[int] = Field(default_factory=list)
@@ -62,6 +72,9 @@ class RouterDebug(BaseModel):
     detected_themes: list[str] = Field(default_factory=list)
     knowledge_gaps: list[str] = Field(default_factory=list)
     related_sessions: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_generation_plan: dict[str, Any] = Field(default_factory=dict)
+    generated_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_generation_errors: list[dict[str, str]] = Field(default_factory=list)
 
 
 class AssistantPayload(BaseModel):
@@ -92,3 +105,4 @@ class RouterPayload(BaseModel):
     required_context: list[str] = Field(default_factory=list)
     verification_need: str
     next_state: str
+    artifact_generation_plan: dict[str, Any] = Field(default_factory=dict)

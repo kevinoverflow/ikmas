@@ -1,6 +1,10 @@
 import pytest
 
-from app.backend.router_agent import build_router_prompt, route_with_agent
+from app.backend.router_agent import (
+    build_router_prompt,
+    normalize_artifact_generation_plan,
+    route_with_agent,
+)
 
 
 def test_build_router_prompt_includes_registry_and_user_request():
@@ -200,3 +204,78 @@ def test_route_with_agent_adds_session_insights_to_prompt_and_decision(monkeypat
     assert decision.detected_themes == ["ScribeAgent", "EXTERNALIZATION"]
     assert decision.knowledge_gaps == ["decision rationale"]
     assert decision.related_sessions[0]["session_id"] == "old-session"
+
+
+def test_route_with_agent_normalizes_artifact_generation_plan():
+    class FakeBackend:
+        def generate(self, prompt, **kwargs):
+            return """{
+              "seci_mode": "Internalization",
+              "reuse_situation": "Expertise-Seeking Novice",
+              "selected_agent": "MentorAgent",
+              "routing_confidence": "high",
+              "reason": "The user wants learning support.",
+              "required_context": [],
+              "verification_need": "none",
+              "next_state": "agent_execution",
+              "artifact_generation_plan": {
+                "artifacts_needed": ["definition", "concept", "unknown", "quiz"],
+                "target_audience": "novice",
+                "reason": "Learning artifacts requested."
+              }
+            }"""
+
+    decision = route_with_agent(
+        FakeBackend(),
+        user_input="Erkläre das Thema mit Lernmaterial.",
+        chat_history=[],
+        session_ctx={},
+    )
+
+    assert decision.artifact_generation_plan == {
+        "artifacts_needed": ["definition", "concept", "quiz_item"],
+        "target_audience": "novice",
+        "reason": "Learning artifacts requested.",
+    }
+
+
+def test_explicit_artifact_triggers_are_merged_with_router_plan():
+    class FakeBackend:
+        def generate(self, prompt, **kwargs):
+            return """{
+              "seci_mode": "Internalization",
+              "reuse_situation": "Expertise-Seeking Novice",
+              "selected_agent": "MentorAgent",
+              "routing_confidence": "medium",
+              "reason": "The user wants learning support.",
+              "required_context": [],
+              "verification_need": "none",
+              "next_state": "agent_execution",
+              "artifact_generation_plan": {
+                "artifacts_needed": ["definition"],
+                "target_audience": "general",
+                "reason": "Definition requested."
+              }
+            }"""
+
+    decision = route_with_agent(
+        FakeBackend(),
+        user_input="Gib mir eine Definition und mach ein Quiz dazu.",
+        chat_history=[],
+        session_ctx={},
+    )
+
+    assert decision.artifact_generation_plan["artifacts_needed"] == ["definition", "quiz_item"]
+
+
+def test_normalize_artifact_generation_plan_handles_invalid_plan():
+    plan = normalize_artifact_generation_plan(
+        {"artifacts_needed": ["case", "concept_map", "konzept"], "target_audience": ""},
+        user_input=None,
+    )
+
+    assert plan == {
+        "artifacts_needed": ["concept"],
+        "target_audience": "general",
+        "reason": "Artifact generation requested or inferred from the user request.",
+    }
