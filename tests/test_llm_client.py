@@ -1,4 +1,5 @@
 from app.backend import llm_client
+from app.rag import llm
 
 
 def test_get_client_returns_provider_client(monkeypatch):
@@ -100,3 +101,82 @@ def test_generate_json_salvages_plain_text_response():
 
     assert payload["assistant_message"] == "Bitcoin ist ein dezentrales digitales Zahlungssystem."
     assert payload["telemetry"]["fallback_used"] is False
+
+
+def test_normalize_payload_accepts_subagent_artifacts_and_drops_unknown_types():
+    raw = """{
+      "role": "MentorAgent",
+      "state": null,
+      "assistant_message": "Antwort",
+      "questions": [],
+      "artefacts": [
+        {"type": "definition", "title": "Definition", "content": "Meaning", "concept_ids": []},
+        {"type": "concept", "title": "Concept", "content": "Explanation", "concept_ids": []},
+        {"type": "quiz_item", "title": "Quiz", "content": "Question", "concept_ids": []},
+        {"type": "unsupported", "title": "Nope", "content": "Ignored", "concept_ids": []}
+      ],
+      "actions": [{"type": "none", "payload": {}}],
+      "citations": [],
+      "telemetry": {
+        "intent": "what_is",
+        "distance": "ESN",
+        "confidence": 0.5,
+        "retrieval_count": 0,
+        "repair_used": false,
+        "fallback_used": false
+      }
+    }"""
+
+    payload = llm_client.LLMClient.parse_and_validate_json(
+        raw,
+        role="MentorAgent",
+        state=None,
+        intent="what_is",
+        distance="ESN",
+        confidence=0.5,
+        retrieval_count=0,
+    )
+
+    assert [artifact["type"] for artifact in payload["artefacts"]] == [
+        "definition",
+        "concept",
+        "quiz_item",
+    ]
+
+
+def test_openai_chat_backend_accepts_max_tokens(monkeypatch):
+    seen = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            seen["request"] = kwargs
+            return type(
+                "Response",
+                (),
+                {
+                    "choices": [
+                        type(
+                            "Choice",
+                            (),
+                            {"message": type("Message", (), {"content": "ok"})()},
+                        )()
+                    ]
+                },
+            )()
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs):
+            self.chat = type(
+                "Chat",
+                (),
+                {"completions": FakeCompletions()},
+            )()
+
+    monkeypatch.setattr(llm, "API_KEY", "test-key")
+    monkeypatch.setattr(llm, "OpenAI", FakeOpenAI)
+    monkeypatch.setattr(llm, "maybe_wrap_openai", lambda client: client)
+
+    backend = llm.OpenAIChatBackend()
+    assert backend.generate("prompt", max_tokens=123) == "ok"
+
+    assert seen["request"]["max_tokens"] == 123

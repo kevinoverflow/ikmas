@@ -17,6 +17,13 @@ ROUTER_SYSTEM_PROMPT = """
     - Expertise-Seeking Novice: the user needs support understanding expert knowledge outside their expertise
     - Secondary Knowledge Miner: the user reuses knowledge for a different purpose or from a distant context
     
+    Session Context:
+    - Recurring themes identified from previous interactions: {recurring_themes}
+    - Uncaptured knowledge gaps from past sessions: {uncaptured_themes}
+    - Related past sessions: {related_sessions}
+    
+    Consider the session context when making your classification. If the user's request relates to recurring themes or uncaptured knowledge gaps, adjust your routing accordingly.
+    
     Select exactly one agent from the available registry.
     Use these exact output conventions:
     - seci_mode must be one of: Socialization, Externalization, Combination, Internalization
@@ -26,6 +33,12 @@ ROUTER_SYSTEM_PROMPT = """
     - required_context must be an array of strings, even if there is only one item
     - verification_need must be a short string, not a boolean
     - next_state should usually be agent_execution
+    - artifact_generation_plan must be an object with:
+      - artifacts_needed: an array containing only definition, concept, quiz_item
+      - target_audience: a short audience label, default general
+      - reason: a short rationale
+    - If no artifact generation is needed, set artifacts_needed to []
+    - If the user explicitly requests a definition, concept explanation, or quiz, include the matching artifact type.
     Return only valid JSON with the requested fields.
     Do not include markdown fences or explanatory prose outside the JSON.
 """

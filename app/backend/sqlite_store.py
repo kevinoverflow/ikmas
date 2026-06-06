@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 from app.domain.types import TurnRecord
 from app.infrastructure.config import DB_PATH
@@ -202,6 +203,119 @@ def save_artefacts(artefacts: list[dict], project: str, refs: list[dict]) -> lis
     return ids
 
 
+def list_artefacts(project: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE project = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (project, limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "project": row["project"],
+            "type": row["type"],
+            "title": row["title"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "concept_ids": [],
+        }
+        for row in rows
+    ]
+
+
+def get_artefact(artefact_id: int) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE id = ?
+            """,
+            (artefact_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "project": row["project"],
+        "type": row["type"],
+        "title": row["title"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+        "concept_ids": [],
+    }
+
+
+def update_artefact(
+    artefact_id: int,
+    *,
+    title: str,
+    content: str,
+) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE artefacts
+            SET title = ?, content = ?
+            WHERE id = ?
+            """,
+            (title, content, artefact_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_artefact(artefact_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM artefacts WHERE id = ?",
+            (artefact_id,),
+        )
+    return cur.rowcount > 0
+
+
+def find_similar_artefacts(
+    *,
+    project: str,
+    artifact_type: str,
+    query: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE project = ?
+              AND type = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (project, artifact_type, limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "project": row["project"],
+            "type": row["type"],
+            "title": row["title"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "concept_ids": [],
+        }
+        for row in rows
+    ]
+
+
 def upsert_user_knowledge(
     user_id: str,
     concept_id: int,
@@ -218,3 +332,34 @@ def upsert_user_knowledge(
             DO UPDATE SET mastery = excluded.mastery,
                           next_review = excluded.next_review
         """, (user_id, concept_id, mastery, next_review))
+
+def store_session_history(
+    session_id: str,
+    user_id: str,
+    user_input: str,
+    router_classification: dict,
+    generated_artefacts: list[str],
+    citations_used: list[str],
+    db_provider
+) -> None:
+    """Store session history for future routing and context."""
+    import json
+    
+    with get_conn() as conn:
+        conn.execute("""
+            INSERT OR REPLACE INTO session_history(
+                session_id, user_id, session_title, timestamp, 
+                router_classification, user_query, generated_artefacts, 
+                citations_used, user_feedback, session_embedding
+            ) VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
+        """, (
+            session_id,
+            user_id,
+            f"Session {session_id}",
+            json.dumps(router_classification),
+            user_input,
+            json.dumps(generated_artefacts),
+            json.dumps(citations_used),
+            json.dumps({}),  # Empty feedback initially
+            None  # No embedding initially
+        ))

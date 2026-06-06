@@ -196,7 +196,17 @@ class LLMClient:
         valid_roles = set(ALL_ROLE_NAMES)
         valid_states = {"ASSESS", "EXPLAIN", "CHECK", "PRACTICE", "FEEDBACK", "SCHEDULE"}
         valid_question_types = {"single_choice", "multi_choice", "text"}
-        valid_artefact_types = {"summary", "flashcards", "quiz", "checklist", "note", "concept_map"}
+        valid_artefact_types = {
+            "summary",
+            "flashcards",
+            "quiz",
+            "checklist",
+            "note",
+            "concept_map",
+            "definition",
+            "concept",
+            "quiz_item",
+        }
         valid_action_types = {"ask", "store_artefact", "schedule_review", "update_mastery", "none"}
 
         normalized_role = parsed.get("role")

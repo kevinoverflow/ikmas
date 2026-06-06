@@ -108,3 +108,20 @@ def test_question_defaults_optional_fields():
 
     assert question.options == []
     assert question.required is True
+
+
+def test_assistant_payload_accepts_subagent_artifact_types():
+    payload = make_valid_payload()
+    payload["artefacts"] = [
+        {"type": "definition", "title": "Definition", "content": "A precise meaning.", "concept_ids": []},
+        {"type": "concept", "title": "Concept", "content": "A conceptual explanation.", "concept_ids": []},
+        {"type": "quiz_item", "title": "Quiz Item", "content": "Question and answer.", "concept_ids": []},
+    ]
+
+    validated = AssistantPayload.model_validate(payload)
+
+    assert [artifact.type for artifact in validated.artefacts] == [
+        "definition",
+        "concept",
+        "quiz_item",
+    ]

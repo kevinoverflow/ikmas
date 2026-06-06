@@ -91,6 +91,30 @@ REUSE_ALIASES: dict[str, str] = {
     "secondary knowledge miner": "Secondary Knowledge Miner",
 }
 
+SUPPORTED_ARTIFACT_TYPES: tuple[str, ...] = ("definition", "concept", "quiz_item")
+
+ARTIFACT_TYPE_ALIASES: dict[str, str] = {
+    "definition": "definition",
+    "definitions": "definition",
+    "definitionen": "definition",
+    "definiere": "definition",
+    "define": "definition",
+    "formal definition": "definition",
+    "concept": "concept",
+    "concepts": "concept",
+    "konzept": "concept",
+    "konzepte": "concept",
+    "concept map": "concept",
+    "conceptual explanation": "concept",
+    "quiz": "quiz_item",
+    "quiz item": "quiz_item",
+    "quiz_item": "quiz_item",
+    "test": "quiz_item",
+    "test me": "quiz_item",
+    "prüfe": "quiz_item",
+    "pruefe": "quiz_item",
+}
+
 
 class RouteDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -108,6 +132,7 @@ class RouteDecision(BaseModel):
     detected_themes: list[str] = Field(default_factory=list)
     knowledge_gaps: list[str] = Field(default_factory=list)
     related_sessions: list[dict[str, Any]] = Field(default_factory=list)
+    artifact_generation_plan: dict[str, Any] = Field(default_factory=dict)
 
 
 def build_router_prompt(
@@ -126,6 +151,11 @@ def build_router_prompt(
 
     history_block = "\n".join(history_lines) if history_lines else "(no prior conversation)"
     session_insights = session_insights or {}
+
+    # Prepare session context for injection into system prompt
+    recurring_themes = ", ".join(session_insights.get("recurring_themes", []))
+    uncaptured_themes = ", ".join(session_insights.get("uncaptured_themes", []))
+    related_sessions = json.dumps(session_insights.get("related_sessions", []), ensure_ascii=False)
 
     return json.dumps(
         {
@@ -147,6 +177,7 @@ def build_router_prompt(
                     "ContextReconstructorAgent",
                 ],
                 "routing_confidence": ["high", "medium", "low"],
+                "artifact_generation_plan.artifacts_needed": list(SUPPORTED_ARTIFACT_TYPES),
             },
             "session_context": {
                 "recurring_themes": session_insights.get("recurring_themes", []),
@@ -166,7 +197,20 @@ def build_router_prompt(
                 "required_context",
                 "verification_need",
                 "next_state",
+                "artifact_generation_plan"
             ],
+            "artifact_generation_plan_contract": {
+                "shape": {
+                    "artifacts_needed": list(SUPPORTED_ARTIFACT_TYPES),
+                    "target_audience": "general",
+                    "reason": "short rationale for artifact generation",
+                },
+                "rules": [
+                    "Use only definition, concept, quiz_item in artifacts_needed.",
+                    "Use an empty artifacts_needed array when no artifact generation is needed.",
+                    "Recommend artifacts when the user explicitly asks for definitions, concepts, or quizzes.",
+                ],
+            },
         },
         ensure_ascii=False,
         indent=2,
@@ -281,9 +325,81 @@ def _normalize_router_payload(parsed: dict) -> RouterPayload:
     reason = normalized.get("reason")
     normalized["reason"] = str(reason).strip() if reason is not None else ""
 
+    normalized["artifact_generation_plan"] = normalize_artifact_generation_plan(
+        normalized.get("artifact_generation_plan"),
+        user_input=None,
+    )
+
     normalized.pop("model_selection", None)
 
     return RouterPayload.model_validate(normalized)
+
+
+def _normalize_artifact_type(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().lower().replace("-", "_")
+    if cleaned in SUPPORTED_ARTIFACT_TYPES:
+        return cleaned
+    return ARTIFACT_TYPE_ALIASES.get(cleaned)
+
+
+def detect_explicit_artifact_types(user_input: str) -> list[str]:
+    text = user_input.lower()
+    detected: list[str] = []
+
+    checks = (
+        ("definition", ("definition", "definitions", "definitionen", "definiere", "define")),
+        ("concept", ("concept", "concepts", "konzept", "konzepte", "concept map")),
+        ("quiz_item", ("quiz", "test my understanding", "test me", "prüfe", "pruefe")),
+    )
+    for artifact_type, needles in checks:
+        if any(needle in text for needle in needles):
+            detected.append(artifact_type)
+
+    return detected
+
+
+def normalize_artifact_generation_plan(
+    plan: Any,
+    *,
+    user_input: str | None,
+) -> dict[str, Any]:
+    if not isinstance(plan, dict):
+        plan = {}
+
+    raw_needed = plan.get("artifacts_needed", [])
+    if isinstance(raw_needed, str):
+        raw_needed = [raw_needed]
+    if not isinstance(raw_needed, list):
+        raw_needed = []
+
+    artifacts_needed: list[str] = []
+    for raw_type in raw_needed:
+        artifact_type = _normalize_artifact_type(raw_type)
+        if artifact_type and artifact_type not in artifacts_needed:
+            artifacts_needed.append(artifact_type)
+
+    if user_input:
+        for artifact_type in detect_explicit_artifact_types(user_input):
+            if artifact_type not in artifacts_needed:
+                artifacts_needed.append(artifact_type)
+
+    target_audience = plan.get("target_audience", "general")
+    if not isinstance(target_audience, str) or not target_audience.strip():
+        target_audience = "general"
+
+    reason = plan.get("reason", "")
+    if not isinstance(reason, str):
+        reason = ""
+    if artifacts_needed and not reason.strip():
+        reason = "Artifact generation requested or inferred from the user request."
+
+    return {
+        "artifacts_needed": artifacts_needed,
+        "target_audience": target_audience.strip(),
+        "reason": reason.strip(),
+    }
 
 
 def get_relevant_history(
@@ -362,7 +478,34 @@ def get_session_similarity_score(user_id: str, query_text: str, since_days: int 
     """Calculate similarity score between current query and session history"""
     # This is a simplified implementation - in a real system we'd compute actual embeddings
     # and compare them for similarity
-    return 0.0
+    # For now, we'll use a basic text similarity approach
+    import difflib
+    
+    # Get session history
+    conn = get_conn()
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT datetime('now', ?)", (f"-{since_days} days",))
+    cutoff_date = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT user_query FROM session_history WHERE user_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT 10",
+        (user_id, cutoff_date)
+    )
+    
+    rows = cursor.fetchall()
+    
+    if not rows:
+        return 0.0
+    
+    # Calculate similarity with the most recent session
+    most_recent_query = rows[0]['user_query'] if rows else ''
+    if not most_recent_query:
+        return 0.0
+        
+    # Use difflib for basic text similarity
+    similarity = difflib.SequenceMatcher(None, query_text.lower(), most_recent_query.lower()).ratio()
+    return float(similarity)
 
 
 @traceable(name="router_agent_route", run_type="chain")
@@ -384,16 +527,34 @@ def route_with_agent(
         )
         session_ctx["session_insights"] = session_insights
 
-    prompt = build_router_prompt(user_input, chat_history, session_insights=session_insights)
+    # Build prompt with session context
+    prompt_data = build_router_prompt(user_input, chat_history, session_insights=session_insights)
+    
+    # Inject session context into system prompt
+    from app.prompts.router_agent_prompt import ROUTER_SYSTEM_PROMPT
+    recurring_themes = ", ".join(session_insights.get("recurring_themes", []))
+    uncaptured_themes = ", ".join(session_insights.get("uncaptured_themes", []))
+    related_sessions = json.dumps(session_insights.get("related_sessions", []), ensure_ascii=False)
+    
+    formatted_system_prompt = ROUTER_SYSTEM_PROMPT.format(
+        recurring_themes=recurring_themes,
+        uncaptured_themes=uncaptured_themes,
+        related_sessions=related_sessions
+    )
 
     raw = backend.generate(
-        prompt,
-        system_prompt=ROUTER_SYSTEM_PROMPT,
+        prompt_data,
+        system_prompt=formatted_system_prompt,
         temperature=0.0,
         response_format={"type": "json_object"},
     )
     parsed = _load_json_object(raw)
     payload = _normalize_router_payload(parsed)
+
+    artifact_generation_plan = normalize_artifact_generation_plan(
+        payload.artifact_generation_plan,
+        user_input=user_input,
+    )
 
     return RouteDecision(
         role=payload.selected_agent,
@@ -409,4 +570,5 @@ def route_with_agent(
         detected_themes=session_insights.get("recurring_themes", []),
         knowledge_gaps=session_insights.get("uncaptured_themes", []),
         related_sessions=session_insights.get("related_sessions", []),
+        artifact_generation_plan=artifact_generation_plan,
     )

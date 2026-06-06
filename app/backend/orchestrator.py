@@ -1,28 +1,49 @@
 from __future__ import annotations
 
+"""
+Main orchestrator for coordinating the IKMAS runtime pipeline.
+"""
+
 import json
 from typing import Any
 
-from app.domain.types import TurnRecord
-from app.backend.db_provider import DBProvider
-from app.backend.router_agent import route_with_agent
+from app.backend.artifact_reuse_agent import artifact_reuse_agent
+from app.backend.artifact_generators.concept_generator import estimate_concept_count
+from app.backend.artifact_generators.definition_generator import estimate_definition_count
+from app.backend.artifact_generators.quiz_generator import estimate_quiz_item_count
 from app.backend.fsm import decide_state
-from app.backend.retrieval import run_retrieval
-from app.infrastructure.tracing import traceable
-from app.domain.schema import AssistantPayload
-from app.backend.sqlite_store import create_session, init_db, log_turn, save_artefacts, get_conn
-from app.backend.user_scope import user_workspace_id
 from app.backend.llm_client import LLMClient
+from app.backend.retrieval import run_retrieval
+from app.backend.router_agent import (
+    model_selection_for_role,
+    normalize_artifact_generation_plan,
+    route_with_agent,
+)
+from app.backend.sqlite_store import (
+    create_session,
+    get_conn,
+    init_db,
+    log_turn,
+    save_artefacts,
+)
+from app.backend.artifact_models import (
+    ArtifactGenerationRequest,
+    ArtifactType,
+)
+from app.backend.subagent_coordinator import (
+    subagent_coordinator,
+)
+from app.domain.schema import AssistantPayload
+from app.domain.types import TurnRecord
 from app.prompts.prompts import get_role_prompt
 from app.rag.llm import OpenAIChatBackend
-from app.infrastructure.config import (
-    ROUTER_MODEL_NAME,
-    SCRIBE_MODEL_NAME,
-    SEMANTIC_LINKING_MODEL_NAME,
-    MENTOR_MODEL_NAME,
-    CONTEXT_RECONSTRUCTOR_MODEL_NAME,
-    LLM_MODEL_NAME
-)
+
+
+ARTIFACT_TITLES = {
+    "definition": "Definition",
+    "concept": "Concept Explanation",
+    "quiz_item": "Quiz Item",
+}
 
 
 def create_chat_backend(model_name: str | None = None):
@@ -32,108 +53,94 @@ def create_chat_backend(model_name: str | None = None):
         return OpenAIChatBackend()
 
 
-ROLE_TO_INTENT = {
-    "ScribeAgent": "project_specific",
-    "SemanticLinkingAgent": "pattern_mining",
-    "MentorAgent": "what_is",
-    "ContextReconstructorAgent": "cross_context",
-}
+def build_session_title(user_input: str, max_chars: int = 80) -> str:
+    normalized = " ".join(user_input.split()).strip()
+    if len(normalized) <= max_chars:
+        return normalized or "Untitled session"
+    return normalized[: max_chars - 3].rstrip() + "..."
 
 
-def intent_for_route(role: str) -> str:
-    return ROLE_TO_INTENT.get(role, "what_is")
-
-
-def build_session_title(user_input: str, max_chars: int = 48) -> str:
-    title = " ".join(user_input.strip().split())
-    if not title:
-        return "New chat"
-    if len(title) <= max_chars:
-        return title
-    if max_chars <= 3:
-        return title[:max_chars]
-    return title[: max_chars - 3].rstrip() + "..."
-
-
-def store_session_history(
-    session_id: str,
-    user_id: str | None,
-    user_input: str,
-    router_classification: Any,
-    generated_artefacts: list,
-    citations_used: list,
-    user_feedback: dict | None = None,
-    db_provider: DBProvider | None = None,
-) -> None:
-    """Store session information for future routing decisions"""
-    provider = db_provider or DBProvider()
-    conn = provider.connect()
-    with conn:
-        # Convert router_classification to dict if it's an object
-        if hasattr(router_classification, "model_dump"):
-            classification_dict = router_classification.model_dump()
-        elif hasattr(router_classification, '__dict__'):
-            classification_dict = router_classification.__dict__
-        elif isinstance(router_classification, dict):
-            classification_dict = router_classification
-        else:
-            # Handle case where it's a simple namespace or other object
-            classification_dict = {
-                'role': getattr(router_classification, 'role', ''),
-                'knowledge_mode': getattr(router_classification, 'knowledge_mode', ''),
-                'distance': getattr(router_classification, 'distance', ''),
-                'routing_confidence': getattr(router_classification, 'routing_confidence', ''),
-                'reason': getattr(router_classification, 'reason', ''),
-                'required_context': getattr(router_classification, 'required_context', []),
-                'verification_need': getattr(router_classification, 'verification_need', ''),
-                'next_state': getattr(router_classification, 'next_state', ''),
-                'used_fallback': getattr(router_classification, 'used_fallback', False),
-            }
-        
-        conn.execute("""
-            INSERT INTO session_history (
-                session_id, user_id, session_title, timestamp, router_classification,
-                user_query, generated_artefacts, citations_used, user_feedback
-            ) VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?)
-            ON CONFLICT(session_id) DO UPDATE SET
-                user_id = excluded.user_id,
-                session_title = COALESCE(session_history.session_title, excluded.session_title),
-                timestamp = excluded.timestamp,
-                router_classification = excluded.router_classification,
-                user_query = excluded.user_query,
-                generated_artefacts = excluded.generated_artefacts,
-                citations_used = excluded.citations_used,
-                user_feedback = excluded.user_feedback
-        """, (
-            session_id,
-            user_id,
-            build_session_title(user_input),
-            json.dumps(classification_dict),
-            user_input,
-            json.dumps(generated_artefacts),
-            json.dumps(citations_used),
-            json.dumps(user_feedback) if user_feedback else None
-        ))
-
-
-def build_session_ctx(session_id: str, user_id: str | None = None) -> dict[str, Any]:
-    """
-    Build the active context used by routing, FSM transitions, and prompts.
-    """
-    context: dict[str, Any] = {"session_id": session_id}
+def _collection_for_user(collection_name: str | None, user_id: str | None) -> str:
+    if collection_name:
+        return collection_name
     if user_id:
-        context.update(build_user_profile(user_id))
-    return context
+        return f"u_{user_id}__default"
+    return "default"
 
 
-def build_user_profile(user_id: str | None) -> dict[str, Any]:
-    """
-    Placeholder for future user profile loading.
-    """
-    return {"language": "de", "user_id": user_id}
+def _route_as_dict(route: Any) -> dict[str, Any]:
+    if hasattr(route, "model_dump"):
+        return route.model_dump()
+    if isinstance(route, dict):
+        return route
+    return {
+        key: value
+        for key, value in vars(route).items()
+        if not key.startswith("_")
+    }
+
+
+def _format_history(chat_history: list[dict[str, str]] | None) -> str:
+    lines: list[str] = []
+    for turn in (chat_history or [])[-6:]:
+        user_turn = (turn.get("user") or "").strip()
+        assistant_turn = (turn.get("assistant") or turn.get("bot") or "").strip()
+        if user_turn:
+            lines.append(f"Nutzer: {user_turn}")
+        if assistant_turn:
+            lines.append(f"Assistent: {assistant_turn}")
+    return "\n".join(lines) if lines else "(keine bisherige Unterhaltung)"
+
+
+def _format_chunks(retrieved_chunks: list[dict[str, Any]]) -> str:
+    if not retrieved_chunks:
+        return (
+            "Kein Retrieval-Kontext gefunden. Wenn kein Retrieval-Kontext vorhanden ist, "
+            "beantworte allgemeine Wissensfragen mit deinem allgemeinen Wissen und kennzeichne, "
+            "dass keine projektspezifischen Quellen verwendet wurden."
+        )
+
+    blocks: list[str] = []
+    for idx, chunk in enumerate(retrieved_chunks, 1):
+        title = chunk.get("title") or chunk.get("source") or "unknown"
+        page = chunk.get("page")
+        locator = f"p. {page}" if page is not None else "no page"
+        text = (chunk.get("text") or "").strip()
+        blocks.append(
+            f"[{idx}] {title} ({locator}) chunk={chunk.get('chunk_id', 'unknown')}\n{text}"
+        )
+    return "\n\n".join(blocks)
+
+
+def _format_session_context(session_ctx: dict[str, Any] | None) -> str:
+    session_ctx = session_ctx or {}
+    lines = ["Session Context:"]
+
+    detected_themes = session_ctx.get("detected_themes") or []
+    knowledge_gaps = session_ctx.get("knowledge_gaps") or []
+    related_sessions = session_ctx.get("related_sessions") or []
+
+    lines.append("Detected themes: " + (", ".join(detected_themes) if detected_themes else "none"))
+    lines.append("Knowledge gaps: " + (", ".join(knowledge_gaps) if knowledge_gaps else "none"))
+
+    if related_sessions:
+        lines.append("Related sessions:")
+        for session in related_sessions[:5]:
+            artefacts = session.get("generated_artefacts") or []
+            lines.append(
+                "- "
+                f"{session.get('title') or 'Previous session'}: "
+                f"{session.get('query') or ''} "
+                f"(artefacts: {', '.join(artefacts) if artefacts else 'none'})"
+            )
+    else:
+        lines.append("Related sessions: none")
+
+    return "\n".join(lines)
 
 
 def build_prompt(
+    *,
     user_input: str,
     role: str,
     role_instructions: str,
@@ -143,13 +150,13 @@ def build_prompt(
     distance: str,
     knowledge_mode: str,
     confidence: float,
-    chat_history: list[dict[str, str]] | None = None,
-    session_ctx: dict[str, Any] | None = None,
+    chat_history: list[dict[str, str]] | None,
+    session_ctx: dict[str, Any] | None,
 ) -> str:
-    schema_example = {
+    response_schema = {
         "role": role,
         "state": state,
-        "assistant_message": "Kurze, direkte Antwort auf die Nutzeranfrage.",
+        "assistant_message": "string",
         "questions": [],
         "artefacts": [],
         "actions": [{"type": "none", "payload": {}}],
@@ -157,128 +164,35 @@ def build_prompt(
         "telemetry": {
             "intent": intent,
             "distance": distance,
-            "confidence": round(confidence, 3),
-            "retrieval_count": min(len(retrieved_chunks), 5),
+            "confidence": confidence,
+            "retrieval_count": len(retrieved_chunks),
             "repair_used": False,
             "fallback_used": False,
         },
     }
 
-    context_lines: list[str] = []
-    for i, chunk in enumerate(retrieved_chunks[:5], start=1):
-        locator = f"p. {chunk['page']}" if chunk.get("page") is not None else "unknown"
-        context_lines.append(
-            "\n".join(
-                [
-                    (
-                        f"[{i}] chunk_id={chunk['chunk_id']} "
-                        f"source={chunk['source']} locator={locator}"
-                    ),
-                    chunk["text"],
-                ]
-            )
-        )
-
-    context_block = "\n\n".join(context_lines) if context_lines else "(kein Retrieval-Kontext)"
-
-    history_lines: list[str] = []
-    for turn in (chat_history or [])[-5:]:
-        user_turn = turn.get("user", "").strip()
-        assistant_turn = turn.get("assistant", "").strip()
-        if user_turn:
-            history_lines.append(f"Nutzer: {user_turn}")
-        if assistant_turn:
-            history_lines.append(f"Assistant: {assistant_turn}")
-
-    history_block = "\n".join(history_lines) if history_lines else "(keine bisherige Unterhaltung)"
-    session_context_block = format_session_context_for_prompt(session_ctx or {})
-
-    return f"""
-Du bist {role}.
-Antworte ausschließlich als JSON entsprechend dem definierten Schema.
-Keine Markdown-Umrandung.
-Kein Zusatztext außerhalb des JSON.
-
-Gib genau diese Felder zurück:
-- role
-- state
-- assistant_message
-- questions
-- artefacts
-- actions
-- citations
-- telemetry
-
-Wichtige Regeln:
-- role muss "{role}" sein.
-- state muss {"null" if state is None else f'"{state}"'} sein.
-- assistant_message muss immer ein nicht-leerer String sein.
-- questions, artefacts, actions und citations müssen Arrays sein.
-- actions muss mindestens ein Objekt mit `type` und `payload` enthalten.
-- citations dürfen nur chunk_id-Werte aus dem Retrieved Context referenzieren.
-- Wenn kein Retrieval-Kontext vorhanden ist, beantworte die Anfrage trotzdem mit allgemeinem Wissen und lasse citations leer.
-- Wenn die Anfrage knapp ist, interpretiere sie sinnvoll statt reflexhaft nachzufragen.
-- telemetry muss diese Werte enthalten:
-  - intent: "{intent}"
-  - distance: "{distance}"
-  - confidence: {confidence:.3f}
-  - retrieval_count: {min(len(retrieved_chunks), 5)}
-  - repair_used: false
-  - fallback_used: false
-
-Kontext:
-- intent: {intent}
-- distance: {distance}
-- knowledge_mode: {knowledge_mode}
-- confidence: {confidence:.3f}
-- state: {state}
-
-Session Context:
-{session_context_block}
-
-Rollenanweisung:
-{role_instructions}
-
-Nutzeranfrage:
-{user_input}
-
-Bisherige Unterhaltung:
-{history_block}
-
-Retrieved Context:
-{context_block}
-
-Beispiel für die Zielstruktur:
-{json.dumps(schema_example, ensure_ascii=False)}
-""".strip()
-
-
-def format_session_context_for_prompt(session_ctx: dict[str, Any]) -> str:
-    session_insights = session_ctx.get("session_insights") or {}
-    detected_themes = session_ctx.get("detected_themes") or session_insights.get("recurring_themes", [])
-    knowledge_gaps = session_ctx.get("knowledge_gaps") or session_insights.get("uncaptured_themes", [])
-    related_sessions = session_ctx.get("related_sessions") or session_insights.get("related_sessions", [])
-
-    if not detected_themes and not knowledge_gaps and not related_sessions:
-        return "(keine relevanten früheren Sessions gefunden)"
-
-    lines = [
-        "Nutze diese Session-Hinweise als Kontext, nicht als Ersatz für die aktuelle Anfrage.",
-    ]
-    if detected_themes:
-        lines.append("Wiederkehrende Themen: " + ", ".join(str(theme) for theme in detected_themes[:8]))
-    if knowledge_gaps:
-        lines.append("Bekannte Wissenslücken: " + ", ".join(str(gap) for gap in knowledge_gaps[:8]))
-    if related_sessions:
-        lines.append("Relevante frühere Sessions:")
-        for session in related_sessions[:3]:
-            title = str(session.get("title") or "Previous session").strip()
-            query = str(session.get("query") or "").strip()
-            artefacts = session.get("generated_artefacts") or []
-            artefact_text = ", ".join(str(item) for item in artefacts[:3]) if artefacts else "keine"
-            lines.append(f"- {title}: {query} | Artefakte: {artefact_text}")
-
-    return "\n".join(lines)
+    return "\n\n".join(
+        [
+            "Rollenanweisung:",
+            role_instructions,
+            "Routing:",
+            f"role: {role}",
+            f"state: {state}",
+            f"intent: {intent}",
+            f"distance: {distance}",
+            f"knowledge_mode: {knowledge_mode}",
+            f"confidence: {confidence}",
+            _format_session_context(session_ctx),
+            "Chat History:",
+            _format_history(chat_history),
+            "Retrieval Context:",
+            _format_chunks(retrieved_chunks),
+            "User Request:",
+            user_input,
+            "Return valid JSON matching this shape:",
+            json.dumps(response_schema, ensure_ascii=False, indent=2),
+        ]
+    )
 
 
 def merge_citations(
@@ -286,174 +200,511 @@ def merge_citations(
     retrieved_chunks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
 
     for citation in model_citations:
-        key = (citation["source"], citation["chunk_id"])
-        if key in seen:
+        chunk_id = str(citation.get("chunk_id") or "")
+        source = citation.get("source")
+        if not chunk_id or not source or chunk_id in seen:
             continue
-        seen.add(key)
         merged.append(citation)
+        seen.add(chunk_id)
 
-    for chunk in retrieved_chunks[:5]:
-        citation = {
-            "source": chunk["source"],
-            "chunk_id": chunk["chunk_id"],
-            "title": chunk.get("title"),
-            "locator": f"p. {chunk['page']}" if chunk.get("page") is not None else None,
-        }
-        key = (citation["source"], citation["chunk_id"])
-        if key in seen:
+    for chunk in retrieved_chunks:
+        chunk_id = str(chunk.get("chunk_id") or "")
+        source = str(chunk.get("source") or "")
+        if not chunk_id or not source or chunk_id in seen:
             continue
-        seen.add(key)
-        merged.append(citation)
+        page = chunk.get("page")
+        merged.append(
+            {
+                "source": source,
+                "chunk_id": chunk_id,
+                "title": chunk.get("title"),
+                "locator": f"p. {page}" if page is not None else None,
+            }
+        )
+        seen.add(chunk_id)
 
     return merged
 
 
-@traceable(name="handle_turn", run_type="chain")
+def _artifact_context(user_input: str, retrieved_chunks: list[dict[str, Any]]) -> str:
+    chunk_texts = [
+        str(chunk.get("text") or "").strip()
+        for chunk in retrieved_chunks[:5]
+        if str(chunk.get("text") or "").strip()
+    ]
+    if chunk_texts:
+        return "\n\n".join(chunk_texts)
+    return user_input
+
+
+def _subagent_request(
+    *,
+    artifact_type: str,
+    user_input: str,
+    retrieved_chunks: list[dict[str, Any]],
+    session_id: str,
+    related_artifacts: list[dict[str, Any]],
+    target_audience: str,
+) -> ArtifactGenerationRequest:
+    return ArtifactGenerationRequest(
+        artifact_type=ArtifactType(artifact_type),
+        context=_artifact_context(user_input, retrieved_chunks),
+        user_input=user_input,
+        session_id=session_id,
+        related_artifacts=related_artifacts,
+        target_audience=target_audience,
+    )
+
+
+def _artifact_from_subagent_result(result) -> dict[str, Any]:
+    artifact_type = result.artifact_type.value
+    return {
+        "type": artifact_type,
+        "title": ARTIFACT_TITLES.get(artifact_type, artifact_type.replace("_", " ").title()),
+        "content": result.content,
+        "concept_ids": [],
+    }
+
+
+def _artifact_from_stored(stored_artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": stored_artifact["type"],
+        "title": stored_artifact["title"],
+        "content": stored_artifact["content"],
+        "concept_ids": stored_artifact.get("concept_ids", []),
+        "_artifact_id": stored_artifact.get("id"),
+        "_reused": True,
+    }
+
+
+def _strip_internal_artifact_fields(artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in artifact.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _artifact_fingerprint(artifact: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(artifact.get("type") or ""),
+        str(artifact.get("title") or ""),
+        str(artifact.get("content") or ""),
+    )
+
+
+def _format_quiz_item_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    question = item.get("question")
+    if isinstance(question, str) and question.strip():
+        lines.append(f"Question: {question.strip()}")
+
+    options = item.get("options")
+    if isinstance(options, list):
+        option_lines: list[str] = []
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            label = option.get("option")
+            text = option.get("text")
+            if isinstance(label, str) and isinstance(text, str):
+                option_lines.append(f"{label.strip()}. {text.strip()}")
+        if option_lines:
+            lines.append("Options:\n" + "\n".join(option_lines))
+
+    correct_answer = item.get("correct_answer")
+    if isinstance(correct_answer, str) and correct_answer.strip():
+        lines.append(f"Correct answer: {correct_answer.strip()}")
+
+    explanation = item.get("explanation")
+    if isinstance(explanation, str) and explanation.strip():
+        lines.append(f"Explanation: {explanation.strip()}")
+
+    evidence_reference = item.get("evidence_reference")
+    if isinstance(evidence_reference, str) and evidence_reference.strip():
+        lines.append(f"Evidence: {evidence_reference.strip()}")
+
+    if lines:
+        return "\n\n".join(lines)
+    return json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _quiz_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("quiz_items") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("question"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        artefacts.append(
+            {
+                "type": "quiz_item",
+                "title": f"Quiz Item {idx}",
+                "content": _format_quiz_item_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _format_definition_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+    definition = item.get("definition")
+    if isinstance(definition, str) and definition.strip():
+        lines.append(definition.strip())
+    scope = item.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        lines.append(f"Scope: {scope.strip()}")
+    return "\n\n".join(lines) if lines else json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _definition_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("definitions") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("definition"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = f"Definition {idx}"
+        artefacts.append(
+            {
+                "type": "definition",
+                "title": title.strip(),
+                "content": _format_definition_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _format_concept_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+    explanation = item.get("explanation")
+    if isinstance(explanation, str) and explanation.strip():
+        lines.append(explanation.strip())
+    relationships = item.get("relationships")
+    if isinstance(relationships, str) and relationships.strip():
+        lines.append(f"Relationships: {relationships.strip()}")
+    example = item.get("example")
+    if isinstance(example, str) and example.strip():
+        lines.append(f"Example: {example.strip()}")
+    return "\n\n".join(lines) if lines else json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _concept_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("concepts") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("explanation"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = f"Concept {idx}"
+        artefacts.append(
+            {
+                "type": "concept",
+                "title": title.strip(),
+                "content": _format_concept_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _artefacts_from_subagent_result(result) -> list[dict[str, Any]]:
+    if result.artifact_type.value == "definition":
+        return _definition_artefacts_from_result(result)
+    if result.artifact_type.value == "concept":
+        return _concept_artefacts_from_result(result)
+    if result.artifact_type.value == "quiz_item":
+        return _quiz_artefacts_from_result(result)
+    return [_artifact_from_subagent_result(result)]
+
+
+def _generate_subagent_artefacts(
+    *,
+    artifact_generation_plan: dict[str, Any],
+    user_input: str,
+    retrieved_chunks: list[dict[str, Any]],
+    session_id: str,
+    existing_artefacts: list[dict[str, Any]],
+    backend: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
+    generated_artefacts: list[dict[str, Any]] = []
+    generated_debug: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    artifacts_needed = artifact_generation_plan.get("artifacts_needed", [])
+    if not isinstance(artifacts_needed, list):
+        return generated_artefacts, generated_debug, errors
+
+    target_audience = artifact_generation_plan.get("target_audience", "general")
+    if not isinstance(target_audience, str) or not target_audience.strip():
+        target_audience = "general"
+
+    for artifact_type in artifacts_needed:
+        try:
+            request = _subagent_request(
+                artifact_type=str(artifact_type),
+                user_input=user_input,
+                retrieved_chunks=retrieved_chunks,
+                session_id=session_id,
+                related_artifacts=existing_artefacts + generated_artefacts,
+                target_audience=target_audience,
+            )
+            subagent_id = subagent_coordinator.spawn_subagent(request.artifact_type.value, request)
+            result = subagent_coordinator.execute_subagent(subagent_id, backend)
+            artefacts = _artefacts_from_subagent_result(result)
+            generated_artefacts.extend(artefacts)
+            for artefact in artefacts:
+                generated_debug.append(
+                    {
+                        "type": artefact["type"],
+                        "title": artefact["title"],
+                        "confidence": result.confidence,
+                        "metadata": result.metadata,
+                    }
+                )
+        except Exception as exc:
+            errors.append(
+                {
+                    "type": str(artifact_type),
+                    "error": str(exc),
+                }
+            )
+
+    return generated_artefacts, generated_debug, errors
+
+
+def _plan_for_missing_artifacts(
+    artifact_generation_plan: dict[str, Any],
+    missing_artifact_types: list[str],
+) -> dict[str, Any]:
+    return {
+        **artifact_generation_plan,
+        "artifacts_needed": missing_artifact_types,
+    }
+
+
+def _desired_artifact_counts(
+    artifact_types: list[str],
+    context: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for artifact_type in artifact_types:
+        if artifact_type == "definition":
+            counts[artifact_type] = estimate_definition_count(context)
+        elif artifact_type == "concept":
+            counts[artifact_type] = estimate_concept_count(context)
+        elif artifact_type == "quiz_item":
+            counts[artifact_type] = estimate_quiz_item_count(context)
+        else:
+            counts[artifact_type] = 1
+    return counts
+
+
+def store_session_history(
+    *,
+    session_id: str,
+    user_id: str | None = None,
+    user_input: str,
+    router_classification: Any,
+    generated_artefacts: list[str],
+    citations_used: list[str],
+    db_provider: Any | None = None,
+) -> None:
+    existing_title: str | None = None
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT session_title FROM session_history WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is not None:
+            existing_title = row["session_title"]
+
+        session_title = existing_title or build_session_title(user_input)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO session_history(
+                session_id, user_id, session_title, timestamp,
+                router_classification, user_query, generated_artefacts,
+                citations_used, user_feedback, session_embedding
+            ) VALUES (?, ?, ?, datetime('now'), ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                user_id,
+                session_title,
+                json.dumps(_route_as_dict(router_classification), ensure_ascii=False),
+                user_input,
+                json.dumps(generated_artefacts, ensure_ascii=False),
+                json.dumps(citations_used, ensure_ascii=False),
+                json.dumps({}, ensure_ascii=False),
+                None,
+            ),
+        )
+
+
 def handle_turn(
+    *,
     session_id: str,
     user_input: str,
     user_id: str | None = None,
-    *,
-    collection_name: str = "default",
+    collection_name: str | None = None,
     chat_history: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
-    """
-    Main orchestration entrypoint.
+    init_db()
+    create_session(session_id)
 
-    Flow:
-    1. ensure session exists
-    2. classify intent + estimate distance
-    3. run retrieval and compute confidence
-    4. route role
-    5. decide tutor FSM state
-    6. build prompt
-    7. call LLM with strict JSON handling
-    8. validate final payload
-    9. persist turn + artefacts
-    10. return schema-valid payload
-    """
-    db_provider = DBProvider(
-        init_db_fn=init_db,
-        get_conn_fn=get_conn,
-        create_session_fn=create_session,
-        log_turn_fn=log_turn,
-        save_artefacts_fn=save_artefacts,
-    )
-    db_provider.init()
-    db_provider.create_session(session_id)
-
-    if user_id and collection_name == "default":
-        collection_name = user_workspace_id(user_id)
-
-    session_ctx = build_session_ctx(session_id, user_id)
-
-    # Route the request first to determine the agent role
-    router_backend = create_chat_backend(ROUTER_MODEL_NAME)
+    collection = _collection_for_user(collection_name, user_id)
+    router_backend = create_chat_backend()
     route = route_with_agent(
         router_backend,
         user_input=user_input,
         chat_history=chat_history,
-        session_ctx=session_ctx,
+        session_ctx={"session_id": session_id, "user_id": user_id},
     )
-    distance = route.distance
-    knowledge_mode = route.knowledge_mode
-    role = route.role
-    intent = intent_for_route(role)
-
-    session_ctx["detected_themes"] = getattr(route, "detected_themes", [])
-    session_ctx["knowledge_gaps"] = getattr(route, "knowledge_gaps", [])
-    session_ctx["related_sessions"] = getattr(route, "related_sessions", [])
-    
-    # Store session history after routing (before executing the agent)
-    # This ensures we have context for the next request
-    store_session_history(
-        session_id=session_id,
-        user_id=user_id,
-        user_input=user_input,
-        router_classification=route,
-        generated_artefacts=[],
-        citations_used=[],
-        db_provider=db_provider,
-    )
-    
-    # Use model selection information from router if available
-    model_name = LLM_MODEL_NAME
-    model_selection = getattr(route, "model_selection", None)
-    if model_selection and "model_name" in model_selection:
-        model_name = model_selection["model_name"]
-    else:
-        # Fallback to legacy model selection logic
-        # Determine the appropriate model for this agent
-        if role == "ScribeAgent":
-            model_name = SCRIBE_MODEL_NAME
-        elif role == "SemanticLinkingAgent":
-            model_name = SEMANTIC_LINKING_MODEL_NAME
-        elif role == "MentorAgent":
-            model_name = MENTOR_MODEL_NAME
-        elif role == "ContextReconstructorAgent":
-            model_name = CONTEXT_RECONSTRUCTOR_MODEL_NAME
-        else:
-            # Default to the main LLM model for other agents
-            model_name = LLM_MODEL_NAME
-    
-    # Now create the backend with the appropriate model
-    backend = router_backend if model_name == ROUTER_MODEL_NAME else create_chat_backend(model_name)
 
     retrieval = run_retrieval(
         query=user_input,
-        collection_name=collection_name,
+        collection_name=collection,
+        k_retrieve=30,
+        k_final=8,
     )
-    confidence = retrieval["confidence"]
 
-    role_instructions = get_role_prompt(role)
+    session_ctx = {
+        "session_id": session_id,
+        "detected_themes": getattr(route, "detected_themes", []),
+        "knowledge_gaps": getattr(route, "knowledge_gaps", []),
+        "related_sessions": getattr(route, "related_sessions", []),
+    }
+    if user_id:
+        session_ctx["user_id"] = user_id
 
     state = decide_state(
-        role=role,
-        retrieval_confidence=confidence,
-        session_ctx=session_ctx,
-        force_tutor_mode=False,
+        route.role,
+        retrieval["confidence"],
+        session_ctx,
+        False,
     )
 
+    model_selection = getattr(route, "model_selection", None) or model_selection_for_role(route.role)
+    backend = create_chat_backend(model_selection.get("model_name"))
+    client = LLMClient(backend)
     prompt = build_prompt(
         user_input=user_input,
-        role=role,
-        role_instructions=role_instructions,
+        role=route.role,
+        role_instructions=get_role_prompt(route.role),
         state=state,
         retrieved_chunks=retrieval["chunks"],
-        intent=intent,
-        distance=distance,
-        knowledge_mode=knowledge_mode,
-        confidence=confidence,
+        intent=route.reason,
+        distance=route.distance,
+        knowledge_mode=route.knowledge_mode,
+        confidence=retrieval["confidence"],
         chat_history=chat_history,
         session_ctx=session_ctx,
     )
 
-    client = LLMClient(backend)
-
     payload = client.generate_json(
         prompt,
-        fallback_role=role,
+        fallback_role=route.role,
         fallback_state=state,
-        fallback_intent=intent,
-        fallback_distance=distance,
-        fallback_confidence=confidence,
+        fallback_intent=route.reason,
+        fallback_distance=route.distance,
+        fallback_confidence=retrieval["confidence"],
         fallback_retrieval_count=len(retrieval["chunks"]),
     )
 
-    # Ensure telemetry reflects actual orchestration values
-    payload["telemetry"]["intent"] = intent
-    payload["telemetry"]["distance"] = distance
-    payload["telemetry"]["confidence"] = confidence
+    payload["telemetry"]["intent"] = route.reason
+    payload["telemetry"]["distance"] = route.distance
+    payload["telemetry"]["confidence"] = retrieval["confidence"]
     payload["telemetry"]["retrieval_count"] = len(retrieval["chunks"])
+    artifact_generation_plan = normalize_artifact_generation_plan(
+        getattr(route, "artifact_generation_plan", {}),
+        user_input=user_input,
+    )
+    artifact_context = _artifact_context(user_input, retrieval["chunks"])
+    desired_artifact_counts = _desired_artifact_counts(
+        artifact_generation_plan.get("artifacts_needed", []),
+        artifact_context,
+    )
+    reuse_decision = artifact_reuse_agent.find_reusable_artifacts(
+        project=collection,
+        user_input=user_input,
+        artifact_types=artifact_generation_plan.get("artifacts_needed", []),
+        desired_counts=desired_artifact_counts,
+    )
+    reused_artefacts = [
+        _artifact_from_stored(artifact)
+        for artifact in reuse_decision.reused_artifacts
+    ]
+    reused_artifact_fingerprints = {
+        _artifact_fingerprint(_strip_internal_artifact_fields(artifact))
+        for artifact in reused_artefacts
+    }
+    generation_plan = _plan_for_missing_artifacts(
+        artifact_generation_plan,
+        reuse_decision.missing_artifact_types,
+    )
+    (
+        generated_subagent_artefacts,
+        generated_artifacts_debug,
+        artifact_generation_errors,
+    ) = _generate_subagent_artefacts(
+        artifact_generation_plan=generation_plan,
+        user_input=user_input,
+        retrieved_chunks=retrieval["chunks"],
+        session_id=session_id,
+        existing_artefacts=payload.get("artefacts", []) + reused_artefacts,
+        backend=backend,
+    )
+    payload["artefacts"] = [
+        _strip_internal_artifact_fields(artefact)
+        for artefact in payload.get("artefacts", []) + reused_artefacts + generated_subagent_artefacts
+    ]
     payload["router_debug"] = {
         "role": route.role,
         "knowledge_mode": route.knowledge_mode,
         "distance": route.distance,
-        "model_name": model_name,
-        "model_reason": (model_selection or {}).get("reason", "Chosen by the default configured language model."),
+        "model_name": model_selection.get("model_name") or "",
+        "model_reason": model_selection.get("reason") or "",
         "routing_confidence": route.routing_confidence,
         "reason": route.reason,
         "required_context": route.required_context,
@@ -463,10 +714,21 @@ def handle_turn(
         "detected_themes": getattr(route, "detected_themes", []),
         "knowledge_gaps": getattr(route, "knowledge_gaps", []),
         "related_sessions": getattr(route, "related_sessions", []),
+        "artifact_generation_plan": artifact_generation_plan,
+        "generated_artifacts": generated_artifacts_debug,
+        "reused_artifacts": [
+            {
+                "id": artifact.get("id"),
+                "type": artifact.get("type"),
+                "title": artifact.get("title"),
+            }
+            for artifact in reuse_decision.reused_artifacts
+        ],
+        "desired_artifact_counts": desired_artifact_counts,
+        "artifact_generation_errors": artifact_generation_errors,
     }
-    payload["citations"] = merge_citations(payload["citations"], retrieval["chunks"])
+    payload["citations"] = merge_citations(payload.get("citations", []), retrieval["chunks"])
 
-    # Final hard validation
     validated = AssistantPayload.model_validate(payload)
     payload = validated.model_dump()
 
@@ -474,28 +736,27 @@ def handle_turn(
         session_id=session_id,
         user_id=user_id,
         user_input=user_input,
-        intent=intent,
-        distance=distance,
+        intent=route.reason,
+        distance=route.distance,
         role=payload["role"],
         state=payload["state"],
-        confidence=confidence,
+        confidence=retrieval["confidence"],
         llm_json=json.dumps(payload, ensure_ascii=False),
         system_state=json.dumps(
             {
                 "role": payload["role"],
                 "state": payload["state"],
-                "intent": intent,
-                "distance": distance,
-                "confidence": confidence,
+                "intent": route.reason,
+                "distance": route.distance,
+                "confidence": retrieval["confidence"],
             },
             ensure_ascii=False,
         ),
     )
-    db_provider.log_turn(turn)
+    log_turn(turn)
 
-    # Store session history for future routing
-    generated_artefacts = [a["title"] for a in payload["artefacts"]] if payload["artefacts"] else []
-    citations_used = [c["chunk_id"] for c in payload["citations"]] if payload["citations"] else []
+    generated_artefacts = [artefact["title"] for artefact in payload["artefacts"]]
+    citations_used = [citation["chunk_id"] for citation in payload["citations"]]
     store_session_history(
         session_id=session_id,
         user_id=user_id,
@@ -503,18 +764,39 @@ def handle_turn(
         router_classification=route,
         generated_artefacts=generated_artefacts,
         citations_used=citations_used,
-        db_provider=db_provider,
     )
 
-    if payload["artefacts"]:
+    new_artefacts = [
+        artefact
+        for artefact in payload["artefacts"]
+        if _artifact_fingerprint(artefact) not in reused_artifact_fingerprints
+    ]
+    if new_artefacts:
         refs = [
             {"ref_type": "chunk", "ref_id": chunk["chunk_id"]}
             for chunk in retrieval["chunks"][:5]
         ]
-        db_provider.save_artefacts(
-            artefacts=payload["artefacts"],
-            project=collection_name,
-            refs=refs,
-        )
+        save_artefacts(new_artefacts, project=collection, refs=refs)
 
     return payload
+
+
+def orchestrate(
+    *,
+    user_input: str,
+    session_id: str,
+    user_id: str,
+    chat_history: list[dict[str, str]] | None = None,
+    db_provider: Any | None = None,
+    collection_name: str = "default",
+    backend: Any | None = None,
+    router_backend: Any | None = None,
+    session_ctx: dict | None = None,
+) -> dict[str, Any]:
+    return handle_turn(
+        session_id=session_id,
+        user_id=user_id,
+        user_input=user_input,
+        collection_name=collection_name,
+        chat_history=chat_history,
+    )
