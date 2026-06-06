@@ -2,10 +2,23 @@
 Definition Generator Agent for creating formal definitions of concepts.
 """
 
-from typing import Dict, Any, List
 from app.backend.artifact_generators.base_artifact_generator import BaseArtifactGenerator, ArtifactGenerationContext
-from app.backend.subagent_coordinator import ArtifactResult, ArtifactType
+from app.backend.artifact_models import ArtifactResult, ArtifactType
 from app.infrastructure.tracing import traceable
+
+
+def estimate_definition_count(context_content: str) -> int:
+    """Estimate how many distinct definitions the available knowledge can support."""
+    word_count = len(context_content.split())
+    if word_count >= 700:
+        return 5
+    if word_count >= 350:
+        return 4
+    if word_count >= 180:
+        return 3
+    if word_count >= 80:
+        return 2
+    return 1
 
 
 class DefinitionGeneratorAgent(BaseArtifactGenerator):
@@ -16,48 +29,64 @@ class DefinitionGeneratorAgent(BaseArtifactGenerator):
     
     @traceable(name="definition_generator_generate", run_type="llm")
     def generate(self, context: ArtifactGenerationContext, backend) -> ArtifactResult:
-        """Generate a formal definition based on the context."""
+        """Generate one or more formal definitions based on the context."""
+        definition_count = estimate_definition_count(context.context_content)
+        existing_artifacts = "\n".join(
+            f"- {artifact.get('title', 'Untitled')}: {artifact.get('content', '')[:240]}"
+            for artifact in context.related_artifacts
+            if artifact.get("type") == ArtifactType.DEFINITION.value
+        ) or "None"
         
-        # Create a prompt for the LLM to generate a definition
         prompt = f"""
-        Generate a formal, precise definition for the following concept or term:
+        Generate up to {definition_count} formal, precise definition(s) from the following knowledge.
+        Use fewer only if the source content cannot support {definition_count} distinct definitions.
 
-        Concept/Topic: "{context.context_content}"
+        Knowledge:
+        "{context.context_content}"
 
         User's original request: "{context.user_input}"
 
         Target audience: {context.target_audience}
 
+        Existing definition artifacts already available:
+        {existing_artifacts}
+
         Requirements:
-        1. Provide a clear, concise definition that captures the essential meaning
+        1. Identify distinct concepts or terms worth defining
+        2. Provide clear, concise definitions that capture essential meaning
         2. Use precise academic language appropriate for the target audience
         3. Include any necessary qualifiers or constraints that define the scope
         4. Reference related concepts if relevant
-        5. Keep the definition focused on the core meaning
+        5. Keep each definition focused on one core meaning
+        6. Do not invent concepts that are not supported by the knowledge above
+        7. Do not recreate definitions that are already covered by existing artifacts
 
-        Format the response as a well-structured definition with:
-        - Clear statement of what the concept means
-        - Any important distinctions or limitations
-        - Connection to related ideas if applicable
-
-        Definition:
+        Return only valid JSON with this exact structure:
+        {{
+          "definitions": [
+            {{
+              "title": "Concept or term name",
+              "definition": "Clear definition text",
+              "scope": "Important limits, qualifiers, or related distinctions"
+            }}
+          ]
+        }}
         """
         
-        # Generate using the backend
         raw_response = backend.generate(
             prompt,
-            temperature=0.3,  # Low temperature for consistency
-            max_tokens=500
+            temperature=0.3,
+            max_tokens=220 * definition_count,
+            response_format={"type": "json_object"},
         )
         
-        # Validate and structure the result
         definition = raw_response.strip()
         
-        # Extract key metadata
         metadata = self.get_metadata(context)
         metadata.update({
             "word_count": len(definition.split()),
-            "audience_level": context.target_audience
+            "audience_level": context.target_audience,
+            "requested_item_count": definition_count,
         })
         
         return ArtifactResult(

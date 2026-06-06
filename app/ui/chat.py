@@ -61,7 +61,6 @@ def _render_chat_turn(turn: dict) -> None:
         st.markdown(payload["assistant_message"])
         _render_response_meta(payload, telemetry)
         _render_questions(payload.get("questions", []))
-        _render_artefacts(payload.get("artefacts", []))
         _render_router_debug(payload.get("router_debug"))
 
     _render_sources(payload.get("citations", []))
@@ -88,17 +87,6 @@ def _render_questions(questions: list[dict]) -> None:
             st.markdown(f"- {label} ({', '.join(options)})")
         else:
             st.markdown(f"- {label}")
-
-
-def _render_artefacts(artefacts: list[dict]) -> None:
-    if not artefacts:
-        return
-
-    with st.expander("Artefacts"):
-        for artefact in artefacts:
-            st.markdown(f"**{artefact['title']}**")
-            st.caption(artefact["type"])
-            st.write(artefact["content"])
 
 
 def _render_sources(citations: list[dict]) -> None:

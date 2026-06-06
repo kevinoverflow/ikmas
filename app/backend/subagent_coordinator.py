@@ -4,43 +4,14 @@ This system enables the IKMAS system to spawn and coordinate subagents
 for generating knowledge artifacts like definitions, concepts, quizzes, etc.
 """
 
-from typing import Dict, List, Any, Optional
-from dataclasses import dataclass
-from enum import Enum
+from typing import Any, Dict, List
 import uuid
+from app.backend.artifact_models import (
+    ArtifactGenerationRequest,
+    ArtifactResult,
+    ArtifactType,
+)
 from app.infrastructure.tracing import traceable
-
-
-class ArtifactType(str, Enum):
-    """Types of knowledge artifacts that can be generated."""
-    DEFINITION = "definition"
-    CONCEPT = "concept"
-    PREREQUISITE = "prerequisite"
-    PITFALL = "pitfall"
-    CASE = "case"
-    QUIZ_ITEM = "quiz_item"
-
-
-@dataclass
-class ArtifactGenerationRequest:
-    """Request for generating a specific type of artifact."""
-    artifact_type: ArtifactType
-    context: str  # Context or content to work with
-    user_input: str  # Original user request
-    session_id: str  # Session identifier for tracking
-    related_artifacts: List[Dict[str, Any]] = None  # Previously generated artifacts
-    target_audience: str = "general"  # Audience level (novice, intermediate, expert)
-
-
-@dataclass
-class ArtifactResult:
-    """Result from artifact generation."""
-    artifact_type: ArtifactType
-    content: str
-    metadata: Dict[str, Any]
-    confidence: float = 0.0
-    generated_at: str = None  # Timestamp
-    source_artifacts: List[str] = None  # References to source artifacts
 
 
 class SubagentCoordinator:

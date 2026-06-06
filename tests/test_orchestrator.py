@@ -328,12 +328,17 @@ def test_handle_turn_appends_subagent_artifacts_and_persists_combined_artefacts(
                 confidence=0.9,
             )
 
+    class FakeReuseAgent:
+        def find_reusable_artifacts(self, **kwargs):
+            return SimpleNamespace(reused_artifacts=[], missing_artifact_types=["definition"])
+
     def fake_save_artefacts(artefacts, project, refs):
         seen["saved_artefacts"] = artefacts
         seen["project"] = project
         return [1, 2]
 
     monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "artifact_reuse_agent", FakeReuseAgent())
     monkeypatch.setattr(orchestrator, "subagent_coordinator", FakeCoordinator())
     monkeypatch.setattr(orchestrator, "save_artefacts", fake_save_artefacts)
 
@@ -406,7 +411,12 @@ def test_handle_turn_keeps_main_answer_when_subagent_fails(monkeypatch):
         def execute_subagent(self, subagent_id, backend):
             raise RuntimeError("quiz failed")
 
+    class FakeReuseAgent:
+        def find_reusable_artifacts(self, **kwargs):
+            return SimpleNamespace(reused_artifacts=[], missing_artifact_types=["quiz_item"])
+
     monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "artifact_reuse_agent", FakeReuseAgent())
     monkeypatch.setattr(orchestrator, "subagent_coordinator", FailingCoordinator())
 
     payload = orchestrator.handle_turn(
@@ -421,6 +431,203 @@ def test_handle_turn_keeps_main_answer_when_subagent_fails(monkeypatch):
         {"type": "quiz_item", "error": "quiz failed"}
     ]
     assert "saved" not in seen
+
+
+def test_handle_turn_reuses_existing_artifact_and_skips_generation(monkeypatch):
+    seen = {}
+
+    monkeypatch.setattr(orchestrator, "init_db", lambda: None)
+    monkeypatch.setattr(orchestrator, "create_session", lambda session_id: None)
+    monkeypatch.setattr(orchestrator, "run_retrieval", lambda **kwargs: {
+        "chunks": [],
+        "top1": 0.0,
+        "avg_top3": 0.0,
+        "coverage": 0.0,
+        "confidence": 0.0,
+    })
+    monkeypatch.setattr(
+        orchestrator,
+        "route_with_agent",
+        lambda *args, **kwargs: SimpleNamespace(
+            role="MentorAgent",
+            knowledge_mode="INTERNALIZATION",
+            distance="ESN",
+            routing_confidence="high",
+            reason="learning support",
+            required_context=[],
+            verification_need="none",
+            next_state="agent_execution",
+            used_fallback=False,
+            artifact_generation_plan={
+                "artifacts_needed": ["definition"],
+                "target_audience": "general",
+                "reason": "Definition requested.",
+            },
+        ),
+    )
+    monkeypatch.setattr(orchestrator, "decide_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(orchestrator, "OpenAIChatBackend", lambda: object())
+    monkeypatch.setattr(orchestrator, "log_turn", lambda turn: None)
+    monkeypatch.setattr(orchestrator, "store_session_history", lambda **kwargs: seen.setdefault("history", kwargs))
+    monkeypatch.setattr(orchestrator, "save_artefacts", lambda *args, **kwargs: seen.setdefault("saved", True))
+
+    class FakeLLMClient:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def generate_json(self, prompt, **kwargs):
+            return make_valid_payload()
+
+    class FakeReuseAgent:
+        def find_reusable_artifacts(self, **kwargs):
+            seen["reuse_kwargs"] = kwargs
+            return SimpleNamespace(
+                reused_artifacts=[
+                    {
+                        "id": 42,
+                        "type": "definition",
+                        "title": "RAG",
+                        "content": "Retrieval augmented generation.",
+                        "concept_ids": [],
+                    }
+                ],
+                missing_artifact_types=[],
+            )
+
+    class FailingCoordinator:
+        def spawn_subagent(self, *args, **kwargs):
+            raise AssertionError("subagent should not run for reused artifacts")
+
+    monkeypatch.setattr(orchestrator, "LLMClient", FakeLLMClient)
+    monkeypatch.setattr(orchestrator, "artifact_reuse_agent", FakeReuseAgent())
+    monkeypatch.setattr(orchestrator, "subagent_coordinator", FailingCoordinator())
+
+    payload = orchestrator.handle_turn(
+        session_id="session-reuse",
+        user_input="Define RAG",
+        collection_name="team-space",
+    )
+
+    assert payload["artefacts"] == [
+        {
+            "type": "definition",
+            "title": "RAG",
+            "content": "Retrieval augmented generation.",
+            "concept_ids": [],
+        }
+    ]
+    assert payload["router_debug"]["reused_artifacts"] == [
+        {"id": 42, "type": "definition", "title": "RAG"}
+    ]
+    assert seen["reuse_kwargs"]["project"] == "team-space"
+    assert seen["history"]["generated_artefacts"] == ["RAG"]
+    assert "saved" not in seen
+
+
+def test_quiz_subagent_result_splits_into_multiple_artifacts():
+    result = SimpleNamespace(
+        artifact_type=SimpleNamespace(value="quiz_item"),
+        content=json.dumps(
+            {
+                "quiz_items": [
+                    {
+                        "question": "What is RAG?",
+                        "options": [
+                            {"option": "A", "text": "Retrieval augmented generation"},
+                            {"option": "B", "text": "A database"},
+                        ],
+                        "correct_answer": "A",
+                        "explanation": "RAG combines retrieval with generation.",
+                        "evidence_reference": "retrieval notes",
+                    },
+                    {
+                        "question": "Why use retrieval?",
+                        "options": [
+                            {"option": "A", "text": "To add context"},
+                            {"option": "B", "text": "To remove sources"},
+                        ],
+                        "correct_answer": "A",
+                        "explanation": "Retrieval supplies relevant context.",
+                        "evidence_reference": "retrieval notes",
+                    },
+                ]
+            }
+        ),
+        metadata={},
+        confidence=0.8,
+    )
+
+    artefacts = orchestrator._artefacts_from_subagent_result(result)
+
+    assert [artefact["title"] for artefact in artefacts] == ["Quiz Item 1", "Quiz Item 2"]
+    assert all(artefact["type"] == "quiz_item" for artefact in artefacts)
+    assert "Question: What is RAG?" in artefacts[0]["content"]
+    assert "Correct answer: A" in artefacts[1]["content"]
+
+
+def test_definition_subagent_result_splits_into_multiple_artifacts():
+    result = SimpleNamespace(
+        artifact_type=SimpleNamespace(value="definition"),
+        content=json.dumps(
+            {
+                "definitions": [
+                    {
+                        "title": "Tacit Knowledge",
+                        "definition": "Knowledge that is difficult to codify.",
+                        "scope": "Often experience-based.",
+                    },
+                    {
+                        "title": "Explicit Knowledge",
+                        "definition": "Knowledge captured in formal artifacts.",
+                        "scope": "Can be documented and shared.",
+                    },
+                ]
+            }
+        ),
+        metadata={},
+        confidence=0.9,
+    )
+
+    artefacts = orchestrator._artefacts_from_subagent_result(result)
+
+    assert [artefact["title"] for artefact in artefacts] == [
+        "Tacit Knowledge",
+        "Explicit Knowledge",
+    ]
+    assert all(artefact["type"] == "definition" for artefact in artefacts)
+    assert "Knowledge that is difficult to codify." in artefacts[0]["content"]
+
+
+def test_concept_subagent_result_splits_into_multiple_artifacts():
+    result = SimpleNamespace(
+        artifact_type=SimpleNamespace(value="concept"),
+        content=json.dumps(
+            {
+                "concepts": [
+                    {
+                        "title": "SECI",
+                        "explanation": "A model of knowledge conversion.",
+                        "relationships": "Connects tacit and explicit knowledge.",
+                        "example": "Meeting notes becoming documentation.",
+                    },
+                    {
+                        "title": "RAG",
+                        "explanation": "A retrieval-augmented generation pattern.",
+                        "relationships": "Connects retrieved context and LLM answers.",
+                        "example": "Answering from uploaded files.",
+                    },
+                ]
+            }
+        ),
+        metadata={},
+        confidence=0.85,
+    )
+
+    artefacts = orchestrator._artefacts_from_subagent_result(result)
+
+    assert [artefact["title"] for artefact in artefacts] == ["SECI", "RAG"]
+    assert all(artefact["type"] == "concept" for artefact in artefacts)
+    assert "Relationships: Connects tacit and explicit knowledge." in artefacts[0]["content"]
 
 
 def test_handle_turn_scopes_default_collection_for_authenticated_user(monkeypatch):

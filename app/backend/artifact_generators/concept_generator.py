@@ -2,10 +2,21 @@
 Concept Generator Agent for creating conceptual explanations and mappings.
 """
 
-from typing import Dict, Any, List
 from app.backend.artifact_generators.base_artifact_generator import BaseArtifactGenerator, ArtifactGenerationContext
-from app.backend.subagent_coordinator import ArtifactResult, ArtifactType
+from app.backend.artifact_models import ArtifactResult, ArtifactType
 from app.infrastructure.tracing import traceable
+
+
+def estimate_concept_count(context_content: str) -> int:
+    """Estimate how many concept cards the available knowledge can support."""
+    word_count = len(context_content.split())
+    if word_count >= 700:
+        return 4
+    if word_count >= 350:
+        return 3
+    if word_count >= 120:
+        return 2
+    return 1
 
 
 class ConceptMapperAgent(BaseArtifactGenerator):
@@ -16,51 +27,66 @@ class ConceptMapperAgent(BaseArtifactGenerator):
     
     @traceable(name="concept_mapper_generate", run_type="llm")
     def generate(self, context: ArtifactGenerationContext, backend) -> ArtifactResult:
-        """Generate a conceptual explanation and mapping."""
+        """Generate one or more conceptual explanations and mappings."""
+        concept_count = estimate_concept_count(context.context_content)
+        existing_artifacts = "\n".join(
+            f"- {artifact.get('title', 'Untitled')}: {artifact.get('content', '')[:240]}"
+            for artifact in context.related_artifacts
+            if artifact.get("type") == ArtifactType.CONCEPT.value
+        ) or "None"
         
-        # Create a prompt for the LLM to generate a concept explanation
         prompt = f"""
-        Create a comprehensive conceptual explanation for the following topic:
+        Create up to {concept_count} conceptual explanation card(s) from the following knowledge.
+        Use fewer only if the source content cannot support {concept_count} distinct concept cards.
 
-        Topic: "{context.context_content}"
+        Knowledge:
+        "{context.context_content}"
 
         User's original request: "{context.user_input}"
 
         Target audience: {context.target_audience}
 
+        Existing concept artifacts already available:
+        {existing_artifacts}
+
         Requirements:
-        1. Explain the core concept in accessible terms
+        1. Identify distinct core concepts when multiple cards are useful
+        2. Explain each core concept in accessible terms
         2. Describe the key characteristics and properties
         3. Explain how it relates to related concepts
         4. Provide intuitive examples or analogies
         5. Highlight important distinctions from similar concepts
         6. Mention practical applications or significance
+        7. Do not invent concepts that are not supported by the knowledge above
+        8. Do not recreate concept cards that are already covered by existing artifacts
 
-        Format the response as a structured conceptual explanation with:
-        - Core definition of the concept
-        - Key characteristics and properties
-        - Relationships to related concepts
-        - Examples or analogies
-        - Practical significance
-
-        Concept Explanation:
+        Return only valid JSON with this exact structure:
+        {{
+          "concepts": [
+            {{
+              "title": "Concept name",
+              "explanation": "Accessible conceptual explanation",
+              "relationships": "Important relationships to other concepts",
+              "example": "Short practical example or analogy"
+            }}
+          ]
+        }}
         """
         
-        # Generate using the backend
         raw_response = backend.generate(
             prompt,
-            temperature=0.4,  # Slightly higher temperature for creativity
-            max_tokens=600
+            temperature=0.4,
+            max_tokens=320 * concept_count,
+            response_format={"type": "json_object"},
         )
         
-        # Validate and structure the result
         concept_explanation = raw_response.strip()
         
-        # Extract key metadata
         metadata = self.get_metadata(context)
         metadata.update({
             "word_count": len(concept_explanation.split()),
-            "audience_level": context.target_audience
+            "audience_level": context.target_audience,
+            "requested_item_count": concept_count,
         })
         
         return ArtifactResult(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from typing import Any
 
 from app.domain.types import TurnRecord
 from app.infrastructure.config import DB_PATH
@@ -200,6 +201,119 @@ def save_artefacts(artefacts: list[dict], project: str, refs: list[dict]) -> lis
                 ))
 
     return ids
+
+
+def list_artefacts(project: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE project = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (project, limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "project": row["project"],
+            "type": row["type"],
+            "title": row["title"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "concept_ids": [],
+        }
+        for row in rows
+    ]
+
+
+def get_artefact(artefact_id: int) -> dict[str, Any] | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE id = ?
+            """,
+            (artefact_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "id": row["id"],
+        "project": row["project"],
+        "type": row["type"],
+        "title": row["title"],
+        "content": row["content"],
+        "created_at": row["created_at"],
+        "concept_ids": [],
+    }
+
+
+def update_artefact(
+    artefact_id: int,
+    *,
+    title: str,
+    content: str,
+) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            """
+            UPDATE artefacts
+            SET title = ?, content = ?
+            WHERE id = ?
+            """,
+            (title, content, artefact_id),
+        )
+    return cur.rowcount > 0
+
+
+def delete_artefact(artefact_id: int) -> bool:
+    with get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM artefacts WHERE id = ?",
+            (artefact_id,),
+        )
+    return cur.rowcount > 0
+
+
+def find_similar_artefacts(
+    *,
+    project: str,
+    artifact_type: str,
+    query: str,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, project, type, title, content, created_at
+            FROM artefacts
+            WHERE project = ?
+              AND type = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (project, artifact_type, limit),
+        ).fetchall()
+
+    return [
+        {
+            "id": row["id"],
+            "project": row["project"],
+            "type": row["type"],
+            "title": row["title"],
+            "content": row["content"],
+            "created_at": row["created_at"],
+            "concept_ids": [],
+        }
+        for row in rows
+    ]
 
 
 def upsert_user_knowledge(

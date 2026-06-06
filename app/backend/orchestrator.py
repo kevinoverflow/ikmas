@@ -7,6 +7,10 @@ Main orchestrator for coordinating the IKMAS runtime pipeline.
 import json
 from typing import Any
 
+from app.backend.artifact_reuse_agent import artifact_reuse_agent
+from app.backend.artifact_generators.concept_generator import estimate_concept_count
+from app.backend.artifact_generators.definition_generator import estimate_definition_count
+from app.backend.artifact_generators.quiz_generator import estimate_quiz_item_count
 from app.backend.fsm import decide_state
 from app.backend.llm_client import LLMClient
 from app.backend.retrieval import run_retrieval
@@ -22,9 +26,11 @@ from app.backend.sqlite_store import (
     log_turn,
     save_artefacts,
 )
-from app.backend.subagent_coordinator import (
+from app.backend.artifact_models import (
     ArtifactGenerationRequest,
     ArtifactType,
+)
+from app.backend.subagent_coordinator import (
     subagent_coordinator,
 )
 from app.domain.schema import AssistantPayload
@@ -263,6 +269,195 @@ def _artifact_from_subagent_result(result) -> dict[str, Any]:
     }
 
 
+def _artifact_from_stored(stored_artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": stored_artifact["type"],
+        "title": stored_artifact["title"],
+        "content": stored_artifact["content"],
+        "concept_ids": stored_artifact.get("concept_ids", []),
+        "_artifact_id": stored_artifact.get("id"),
+        "_reused": True,
+    }
+
+
+def _strip_internal_artifact_fields(artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in artifact.items()
+        if not str(key).startswith("_")
+    }
+
+
+def _artifact_fingerprint(artifact: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(artifact.get("type") or ""),
+        str(artifact.get("title") or ""),
+        str(artifact.get("content") or ""),
+    )
+
+
+def _format_quiz_item_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+
+    question = item.get("question")
+    if isinstance(question, str) and question.strip():
+        lines.append(f"Question: {question.strip()}")
+
+    options = item.get("options")
+    if isinstance(options, list):
+        option_lines: list[str] = []
+        for option in options:
+            if not isinstance(option, dict):
+                continue
+            label = option.get("option")
+            text = option.get("text")
+            if isinstance(label, str) and isinstance(text, str):
+                option_lines.append(f"{label.strip()}. {text.strip()}")
+        if option_lines:
+            lines.append("Options:\n" + "\n".join(option_lines))
+
+    correct_answer = item.get("correct_answer")
+    if isinstance(correct_answer, str) and correct_answer.strip():
+        lines.append(f"Correct answer: {correct_answer.strip()}")
+
+    explanation = item.get("explanation")
+    if isinstance(explanation, str) and explanation.strip():
+        lines.append(f"Explanation: {explanation.strip()}")
+
+    evidence_reference = item.get("evidence_reference")
+    if isinstance(evidence_reference, str) and evidence_reference.strip():
+        lines.append(f"Evidence: {evidence_reference.strip()}")
+
+    if lines:
+        return "\n\n".join(lines)
+    return json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _quiz_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("quiz_items") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("question"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        artefacts.append(
+            {
+                "type": "quiz_item",
+                "title": f"Quiz Item {idx}",
+                "content": _format_quiz_item_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _format_definition_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+    definition = item.get("definition")
+    if isinstance(definition, str) and definition.strip():
+        lines.append(definition.strip())
+    scope = item.get("scope")
+    if isinstance(scope, str) and scope.strip():
+        lines.append(f"Scope: {scope.strip()}")
+    return "\n\n".join(lines) if lines else json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _definition_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("definitions") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("definition"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = f"Definition {idx}"
+        artefacts.append(
+            {
+                "type": "definition",
+                "title": title.strip(),
+                "content": _format_definition_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _format_concept_content(item: dict[str, Any]) -> str:
+    lines: list[str] = []
+    explanation = item.get("explanation")
+    if isinstance(explanation, str) and explanation.strip():
+        lines.append(explanation.strip())
+    relationships = item.get("relationships")
+    if isinstance(relationships, str) and relationships.strip():
+        lines.append(f"Relationships: {relationships.strip()}")
+    example = item.get("example")
+    if isinstance(example, str) and example.strip():
+        lines.append(f"Example: {example.strip()}")
+    return "\n\n".join(lines) if lines else json.dumps(item, ensure_ascii=False, indent=2)
+
+
+def _concept_artefacts_from_result(result) -> list[dict[str, Any]]:
+    try:
+        parsed = json.loads(result.content)
+    except (TypeError, json.JSONDecodeError):
+        return [_artifact_from_subagent_result(result)]
+
+    raw_items = parsed.get("concepts") if isinstance(parsed, dict) else None
+    if raw_items is None and isinstance(parsed, dict) and parsed.get("explanation"):
+        raw_items = [parsed]
+    if not isinstance(raw_items, list):
+        return [_artifact_from_subagent_result(result)]
+
+    artefacts: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        title = item.get("title")
+        if not isinstance(title, str) or not title.strip():
+            title = f"Concept {idx}"
+        artefacts.append(
+            {
+                "type": "concept",
+                "title": title.strip(),
+                "content": _format_concept_content(item),
+                "concept_ids": [],
+            }
+        )
+
+    return artefacts or [_artifact_from_subagent_result(result)]
+
+
+def _artefacts_from_subagent_result(result) -> list[dict[str, Any]]:
+    if result.artifact_type.value == "definition":
+        return _definition_artefacts_from_result(result)
+    if result.artifact_type.value == "concept":
+        return _concept_artefacts_from_result(result)
+    if result.artifact_type.value == "quiz_item":
+        return _quiz_artefacts_from_result(result)
+    return [_artifact_from_subagent_result(result)]
+
+
 def _generate_subagent_artefacts(
     *,
     artifact_generation_plan: dict[str, Any],
@@ -296,16 +491,17 @@ def _generate_subagent_artefacts(
             )
             subagent_id = subagent_coordinator.spawn_subagent(request.artifact_type.value, request)
             result = subagent_coordinator.execute_subagent(subagent_id, backend)
-            artefact = _artifact_from_subagent_result(result)
-            generated_artefacts.append(artefact)
-            generated_debug.append(
-                {
-                    "type": artefact["type"],
-                    "title": artefact["title"],
-                    "confidence": result.confidence,
-                    "metadata": result.metadata,
-                }
-            )
+            artefacts = _artefacts_from_subagent_result(result)
+            generated_artefacts.extend(artefacts)
+            for artefact in artefacts:
+                generated_debug.append(
+                    {
+                        "type": artefact["type"],
+                        "title": artefact["title"],
+                        "confidence": result.confidence,
+                        "metadata": result.metadata,
+                    }
+                )
         except Exception as exc:
             errors.append(
                 {
@@ -315,6 +511,33 @@ def _generate_subagent_artefacts(
             )
 
     return generated_artefacts, generated_debug, errors
+
+
+def _plan_for_missing_artifacts(
+    artifact_generation_plan: dict[str, Any],
+    missing_artifact_types: list[str],
+) -> dict[str, Any]:
+    return {
+        **artifact_generation_plan,
+        "artifacts_needed": missing_artifact_types,
+    }
+
+
+def _desired_artifact_counts(
+    artifact_types: list[str],
+    context: str,
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for artifact_type in artifact_types:
+        if artifact_type == "definition":
+            counts[artifact_type] = estimate_definition_count(context)
+        elif artifact_type == "concept":
+            counts[artifact_type] = estimate_concept_count(context)
+        elif artifact_type == "quiz_item":
+            counts[artifact_type] = estimate_quiz_item_count(context)
+        else:
+            counts[artifact_type] = 1
+    return counts
 
 
 def store_session_history(
@@ -437,19 +660,45 @@ def handle_turn(
         getattr(route, "artifact_generation_plan", {}),
         user_input=user_input,
     )
+    artifact_context = _artifact_context(user_input, retrieval["chunks"])
+    desired_artifact_counts = _desired_artifact_counts(
+        artifact_generation_plan.get("artifacts_needed", []),
+        artifact_context,
+    )
+    reuse_decision = artifact_reuse_agent.find_reusable_artifacts(
+        project=collection,
+        user_input=user_input,
+        artifact_types=artifact_generation_plan.get("artifacts_needed", []),
+        desired_counts=desired_artifact_counts,
+    )
+    reused_artefacts = [
+        _artifact_from_stored(artifact)
+        for artifact in reuse_decision.reused_artifacts
+    ]
+    reused_artifact_fingerprints = {
+        _artifact_fingerprint(_strip_internal_artifact_fields(artifact))
+        for artifact in reused_artefacts
+    }
+    generation_plan = _plan_for_missing_artifacts(
+        artifact_generation_plan,
+        reuse_decision.missing_artifact_types,
+    )
     (
         generated_subagent_artefacts,
         generated_artifacts_debug,
         artifact_generation_errors,
     ) = _generate_subagent_artefacts(
-        artifact_generation_plan=artifact_generation_plan,
+        artifact_generation_plan=generation_plan,
         user_input=user_input,
         retrieved_chunks=retrieval["chunks"],
         session_id=session_id,
-        existing_artefacts=payload.get("artefacts", []),
+        existing_artefacts=payload.get("artefacts", []) + reused_artefacts,
         backend=backend,
     )
-    payload["artefacts"] = payload.get("artefacts", []) + generated_subagent_artefacts
+    payload["artefacts"] = [
+        _strip_internal_artifact_fields(artefact)
+        for artefact in payload.get("artefacts", []) + reused_artefacts + generated_subagent_artefacts
+    ]
     payload["router_debug"] = {
         "role": route.role,
         "knowledge_mode": route.knowledge_mode,
@@ -467,6 +716,15 @@ def handle_turn(
         "related_sessions": getattr(route, "related_sessions", []),
         "artifact_generation_plan": artifact_generation_plan,
         "generated_artifacts": generated_artifacts_debug,
+        "reused_artifacts": [
+            {
+                "id": artifact.get("id"),
+                "type": artifact.get("type"),
+                "title": artifact.get("title"),
+            }
+            for artifact in reuse_decision.reused_artifacts
+        ],
+        "desired_artifact_counts": desired_artifact_counts,
         "artifact_generation_errors": artifact_generation_errors,
     }
     payload["citations"] = merge_citations(payload.get("citations", []), retrieval["chunks"])
@@ -508,12 +766,17 @@ def handle_turn(
         citations_used=citations_used,
     )
 
-    if payload["artefacts"]:
+    new_artefacts = [
+        artefact
+        for artefact in payload["artefacts"]
+        if _artifact_fingerprint(artefact) not in reused_artifact_fingerprints
+    ]
+    if new_artefacts:
         refs = [
             {"ref_type": "chunk", "ref_id": chunk["chunk_id"]}
             for chunk in retrieval["chunks"][:5]
         ]
-        save_artefacts(payload["artefacts"], project=collection, refs=refs)
+        save_artefacts(new_artefacts, project=collection, refs=refs)
 
     return payload
 

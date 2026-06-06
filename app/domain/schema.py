@@ -74,6 +74,8 @@ class RouterDebug(BaseModel):
     related_sessions: list[dict[str, Any]] = Field(default_factory=list)
     artifact_generation_plan: dict[str, Any] = Field(default_factory=dict)
     generated_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    reused_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    desired_artifact_counts: dict[str, int] = Field(default_factory=dict)
     artifact_generation_errors: list[dict[str, str]] = Field(default_factory=list)
 
 

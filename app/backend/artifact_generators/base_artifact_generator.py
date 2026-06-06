@@ -3,10 +3,11 @@ Base class for all artifact generation agents.
 This provides a standardized interface for all artifact generators.
 """
 
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
-from typing import Dict, Any, List
 from dataclasses import dataclass
-from app.backend.subagent_coordinator import ArtifactResult, ArtifactType
+from typing import Any, Dict, List
 
 
 @dataclass
@@ -22,15 +23,15 @@ class ArtifactGenerationContext:
 class BaseArtifactGenerator(ABC):
     """Abstract base class for all artifact generators."""
     
-    def __init__(self, artifact_type: ArtifactType):
+    def __init__(self, artifact_type: Any):
         self.artifact_type = artifact_type
     
     @abstractmethod
-    def generate(self, context: ArtifactGenerationContext, backend) -> ArtifactResult:
+    def generate(self, context: ArtifactGenerationContext, backend: Any) -> Any:
         """Generate the artifact based on the given context."""
         pass
     
-    def validate_result(self, result: ArtifactResult) -> bool:
+    def validate_result(self, result: Any) -> bool:
         """Validate that the generated artifact meets quality standards."""
         # Basic validation - can be overridden by specific implementations
         return (
