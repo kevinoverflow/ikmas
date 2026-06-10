@@ -232,10 +232,18 @@ ROLE_MODEL_REASONS: dict[RoleName, str] = {
 }
 
 
-def model_selection_for_role(role: RoleName) -> dict[str, Any]:
+def model_selection_for_role(role: RoleName, model_override: str | None = None) -> dict[str, Any]:
+    # Use model override if provided, otherwise use the configured model
+    if model_override is not None:
+        model_name = model_override
+        reason = f"Overridden to {model_override} by user selection"
+    else:
+        model_name = ROLE_MODEL_NAMES.get(role, LLM_MODEL_NAME)
+        reason = ROLE_MODEL_REASONS.get(role, "Chosen from LLM_MODEL_NAME because no role-specific model is configured.")
+    
     return {
-        "model_name": ROLE_MODEL_NAMES.get(role, LLM_MODEL_NAME),
-        "reason": ROLE_MODEL_REASONS.get(role, "Chosen from LLM_MODEL_NAME because no role-specific model is configured."),
+        "model_name": model_name,
+        "reason": reason,
         "temperature": 0.2,
         "thinking_required": False,
         "response_format": {"type": "json_object"},
@@ -515,6 +523,7 @@ def route_with_agent(
     user_input: str,
     chat_history: list[dict[str, str]] | None = None,
     session_ctx: dict | None = None,
+    model_override: str | None = None,
 ) -> RouteDecision:
     session_ctx = session_ctx or {}
     user_id = session_ctx.get("user_id")
@@ -566,7 +575,7 @@ def route_with_agent(
         verification_need=payload.verification_need,
         next_state=payload.next_state,
         used_fallback=False,
-        model_selection=model_selection_for_role(payload.selected_agent),
+        model_selection=model_selection_for_role(payload.selected_agent, model_override),
         detected_themes=session_insights.get("recurring_themes", []),
         knowledge_gaps=session_insights.get("uncaptured_themes", []),
         related_sessions=session_insights.get("related_sessions", []),

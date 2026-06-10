@@ -30,12 +30,16 @@ def _handle_query(query: str, current_user: dict, collection_id: str) -> None:
 def _ask_assistant(question: str, current_user: dict, collection_id: str):
     from app.backend.orchestrator import handle_turn
 
+    # Check if user has selected a model in the UI
+    model_override = getattr(st.session_state, "selected_model", None)
+    
     return handle_turn(
         session_id=st.session_state.session_id,
         user_input=question,
         user_id=current_user["id"],
         collection_name=collection_id,
         chat_history=_format_chat_history_for_backend(st.session_state.chat_history),
+        model_override=model_override,
     )
 
 

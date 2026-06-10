@@ -4,13 +4,16 @@ from pathlib import Path
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://llm.scads.ai/v1")
 API_KEY = os.getenv("SCADS_API_KEY") or os.getenv("OPENAI_API_KEY")
 
+# Get user-selected model for global override
+GLOBAL_MODEL_OVERRIDE = os.getenv("GLOBAL_MODEL_OVERRIDE", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+
 # Default models for different agent types
-ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-SCRIBE_MODEL_NAME = os.getenv("SCRIBE_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-SEMANTIC_LINKING_MODEL_NAME = os.getenv("SEMANTIC_LINKING_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-MENTOR_MODEL_NAME = os.getenv("MENTOR_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-CONTEXT_RECONSTRUCTOR_MODEL_NAME = os.getenv("CONTEXT_RECONSTRUCTOR_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
-LLM_MODEL_NAME = os.getenv("LANGUAGE_MODEL_NAME", "Qwen/Qwen3-Coder-30B-A3B-Instruct")
+ROUTER_MODEL_NAME = os.getenv("ROUTER_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
+SCRIBE_MODEL_NAME = os.getenv("SCRIBE_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
+SEMANTIC_LINKING_MODEL_NAME = os.getenv("SEMANTIC_LINKING_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
+MENTOR_MODEL_NAME = os.getenv("MENTOR_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
+CONTEXT_RECONSTRUCTOR_MODEL_NAME = os.getenv("CONTEXT_RECONSTRUCTOR_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
+LLM_MODEL_NAME = os.getenv("LANGUAGE_MODEL_NAME", GLOBAL_MODEL_OVERRIDE)
 
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-4B")
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")

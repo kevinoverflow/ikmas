@@ -87,9 +87,23 @@ def _render_model_information() -> None:
     try:
         client = get_client()
         models = client.models.list()
-        for model in models.data:
-            st.markdown(model.id)
+        model_ids = [model.id for model in models.data]
+        
+        # Add model selection dropdown
+        selected_model = st.selectbox(
+            "Select LLM Model:",
+            model_ids,
+            index=model_ids.index(LLM_MODEL_NAME) if LLM_MODEL_NAME in model_ids else 0,
+            key="model_selector"
+        )
+        
+        # Store selected model in session state
+        st.session_state.selected_model = selected_model
+        
         st.divider()
-        st.caption(f"Chat model: {LLM_MODEL_NAME}")
+        st.caption(f"Selected Model: {selected_model}")
+        
     except Exception as exc:
         st.warning(f"Could not list models: {exc}")
+        # Fallback to default model
+        st.caption(f"Chat model: {LLM_MODEL_NAME}")

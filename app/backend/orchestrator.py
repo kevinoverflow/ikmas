@@ -589,6 +589,7 @@ def handle_turn(
     user_id: str | None = None,
     collection_name: str | None = None,
     chat_history: list[dict[str, str]] | None = None,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     init_db()
     create_session(session_id)
@@ -600,6 +601,7 @@ def handle_turn(
         user_input=user_input,
         chat_history=chat_history,
         session_ctx={"session_id": session_id, "user_id": user_id},
+        model_override=model_override,
     )
 
     retrieval = run_retrieval(
@@ -626,7 +628,9 @@ def handle_turn(
     )
 
     model_selection = getattr(route, "model_selection", None) or model_selection_for_role(route.role)
-    backend = create_chat_backend(model_selection.get("model_name"))
+    # Use model override if provided, otherwise use the model from selection
+    model_name_to_use = model_override if model_override is not None else model_selection.get("model_name")
+    backend = create_chat_backend(model_name_to_use)
     client = LLMClient(backend)
     prompt = build_prompt(
         user_input=user_input,
@@ -792,6 +796,7 @@ def orchestrate(
     backend: Any | None = None,
     router_backend: Any | None = None,
     session_ctx: dict | None = None,
+    model_override: str | None = None,
 ) -> dict[str, Any]:
     return handle_turn(
         session_id=session_id,
@@ -799,4 +804,5 @@ def orchestrate(
         user_input=user_input,
         collection_name=collection_name,
         chat_history=chat_history,
+        model_override=model_override,
     )
