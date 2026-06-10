@@ -8,8 +8,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.backend.user_scope import user_workspace_id
-from app.ui.auth import logout, render_auth_workflow
 from app.ui.artifacts import render_artifact_browser
+from app.ui.auth import logout, render_auth_workflow
 from app.ui.chat import render_chat
 from app.ui.constants import LOGICAL_COLLECTION_ID
 from app.ui.files import render_file_workspace
@@ -17,11 +17,40 @@ from app.ui.sidebar import render_sidebar
 from app.ui.state import init_session_state
 
 
+ABOUT_TEXT = """
+# IKMAS
+
+This application uses the following open-source software:
+
+- Streamlit
+- LangChain
+- ChromaDB
+- OpenAI
+- Transformers
+- Tesseract OCR
+- python-docx
+- python-pptx
+
+All components remain subject to their respective licenses.
+
+Repository:
+https://github.com/kevinoverflow/ikmas
+"""
+
+
 def main() -> None:
-    st.set_page_config(page_title="IKMAS", layout="wide")
+    st.set_page_config(
+        page_title="IKMAS",
+        layout="wide",
+        menu_items={
+            "About": ABOUT_TEXT,
+        },
+    )
+
     st.title("Intelligent Knowledge Management Assistance System")
 
     init_session_state(st.session_state)
+
     if not render_auth_workflow():
         st.stop()
 
@@ -29,17 +58,28 @@ def main() -> None:
     if current_user is None:
         st.stop()
 
-    collection_id = user_workspace_id(current_user["id"], LOGICAL_COLLECTION_ID)
+    collection_id = user_workspace_id(
+        current_user["id"],
+        LOGICAL_COLLECTION_ID,
+    )
 
     render_sidebar(current_user, on_logout=logout)
-    main_col, artifact_col = st.columns([0.68, 0.32], gap="large")
+
+    main_col, artifact_col = st.columns(
+        [0.68, 0.32],
+        gap="large",
+    )
 
     with main_col:
         render_file_workspace(collection_id)
         render_chat(current_user, collection_id)
 
     with artifact_col:
-        render_artifact_browser(collection_id, st.session_state.chat_history)
+        render_artifact_browser(
+            collection_id,
+            st.session_state.chat_history,
+        )
 
 
-main()
+if __name__ == "__main__":
+    main()
