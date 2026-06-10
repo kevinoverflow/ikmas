@@ -1,236 +1,58 @@
-# LLM
+# LLM Layer
 
-## Overview
+The LLM layer is split into a raw provider backend and a schema-enforcing client.
 
-The LLM layer in this system is responsible for **controlled interaction with the language model**.
+## OpenAIChatBackend
 
-It is split into two components:
+Location: `app/rag/llm.py`
 
-- **`OpenAIChatBackend` (infrastructure)** → handles API communication
-- **`LLMClient` (backend)** → enforces strict JSON behavior (validation, repair, fallback)
+`OpenAIChatBackend` wraps the OpenAI Python client against an OpenAI-compatible base URL. It reads:
 
----
+- `API_KEY` from `SCADS_API_KEY` or `OPENAI_API_KEY`
+- `BASE_URL` from `OPENAI_BASE_URL`
+- default model from `LANGUAGE_MODEL_NAME` or `GLOBAL_MODEL_OVERRIDE`
 
-## Architecture
+Primary method:
 
-```
-Orchestrator
-   ↓
-LLMClient (JSON logic)
-   ↓
-OpenAIChatBackend (API call)
-   ↓
-OpenAI API
-```
-
----
-
-## Design Goal
-
-> Ensure that **every LLM response is valid, structured, and safe to use in the system**.
-
----
-
-# 🔧 Components
-
-## 1. OpenAIChatBackend
-
-**Location:** `app/infrastructure/llm.py`
-
-### Responsibility
-
-- Initialize OpenAI client
-- Send prompts to the model
-- Return raw text output
-
-### Key Method
-
-```
-defgenerate(prompt:str) ->str
+```python
+generate(
+    prompt: str,
+    *,
+    system_prompt: str = "Return exactly the requested output.",
+    temperature: float = 0.2,
+    response_format: dict[str, Any] | None = None,
+    max_tokens: int | None = None,
+) -> str
 ```
 
-### Example
+It returns raw text and does not validate schemas.
 
-```
-backend=OpenAIChatBackend()
-response=backend.generate("Explain RAG simply.")
-```
+## LLMClient
 
-### Characteristics
+Location: `app/backend/llm_client.py`
 
-- Minimal logic
-- No validation
-- No schema awareness
-- No fallback handling
+`LLMClient.generate_json(...)` is the backend-facing structured-output layer. It:
 
----
+1. calls the backend with `response_format={"type": "json_object"}`,
+2. parses JSON from raw text or fenced output,
+3. normalizes common field variants,
+4. validates against `AssistantPayload`,
+5. performs one repair call if validation fails,
+6. salvages raw text into a valid payload if repair fails,
+7. returns a deterministic fallback if all else fails.
 
-## 2. LLMClient
+## Role Model Selection
 
-**Location:** `app/backend/llm_client.py`
+`model_selection_for_role(...)` in `router_agent.py` maps active roles to configured model environment variables:
 
-### Responsibility
+- `SCRIBE_MODEL_NAME`
+- `SEMANTIC_LINKING_MODEL_NAME`
+- `MENTOR_MODEL_NAME`
+- `CONTEXT_RECONSTRUCTOR_MODEL_NAME`
+- fallback `LANGUAGE_MODEL_NAME`
 
-- Call the backend
-- Enforce **strict JSON output**
-- Validate against schema
-- Attempt repair if invalid
-- Fallback if repair fails
+The UI can pass `model_override`, which is used for the answering backend.
 
----
+## Tracing
 
-# 🔄 Execution Flow
-
-## 1. Generate Output
-
-```
-raw=backend.generate(prompt)
-```
-
----
-
-## 2. Validate JSON
-
-```
-payload=parse_and_validate_json(raw)
-```
-
-If valid:
-
-```
-returnpayload
-```
-
----
-
-## 3. Repair (if invalid)
-
-```
-repair_json(raw)
-```
-
-- Sends original output back to the model
-- Requests corrected JSON
-- Validates again
-
----
-
-## 4. Fallback (if repair fails)
-
-```
-returnfallback_payload(...)
-```
-
-This guarantees:
-
-> ❗ The system NEVER returns invalid output
-
----
-
-# 🧠 Why Strict JSON?
-
-Traditional LLM usage:
-
-```
-LLM → free text → parse manually → hope it works
-```
-
-This system:
-
-```
-LLM → JSON → validate → repair → fallback
-```
-
-Benefits:
-
-- Deterministic behavior
-- No parsing errors
-- Safe for UI + storage
-- Enables automation (FSM, artefacts, etc.)
-
----
-
-# 📦 Output Contract
-
-The LLM must return a JSON object with:
-
-```
-{
-  "role":"...",
-  "state":"...",
-  "assistant_message":"...",
-  "questions": [],
-  "artefacts": [],
-  "actions": [],
-  "citations": [],
-  "telemetry": {}
-}
-```
-
-### Rules
-
-- No additional fields
-- No markdown fences
-- No explanations outside JSON
-- `state` must be valid enum or null
-
----
-
-# 🔁 Repair Strategy
-
-If the model output is invalid:
-
-1. Send original output back to model
-2. Ask for corrected JSON
-3. Validate again
-
-Example instruction:
-
-```
-Repair the following output into valid JSON.
-Return JSON only.
-Do not include explanations.
-```
-
----
-
-# 🧯 Fallback Strategy
-
-If repair fails:
-
-- Return deterministic fallback JSON
-- Usually:
-   - `role = TutoringAgent`
-   - `state = ASSESS`
-   - 2–3 clarifying questions
-
----
-
-# 📊 Telemetry Fields
-
-Every response includes:
-
-```
-{
-  "repair_used":true |false,
-  "fallback_used":true |false
-}
-```
-
-This allows:
-
-- debugging
-- monitoring model reliability
-- evaluating prompt quality
-
----
-
-# ⚠️ Failure Modes Handled
-
-| Problem                 | Solution             |
-| ----------------------- | -------------------- |
-| Invalid JSON            | Repair               |
-| Broken schema           | Repair               |
-| Missing fields          | Repair               |
-| Totally unusable output | Fallback             |
-| Empty response          | Exception → fallback |
+LLM and orchestration calls are decorated with optional tracing hooks in `app/infrastructure/tracing.py`. Without LangSmith configuration, the app continues normally.

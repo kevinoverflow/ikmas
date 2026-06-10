@@ -5,10 +5,13 @@ This script processes a file through the ingestion pipeline and outputs results
 without storing anything to the database or vector store.
 """
 
-import sys
-import os
 from pathlib import Path
+import sys
 from typing import List
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
+
 from app.rag.storage import StoredFile
 from app.rag.ingest import split_file, split_documents
 from app.rag.tokenizer import get_tokenizer
@@ -73,8 +76,8 @@ def debug_ingestion(file_path: str):
 def main():
     """Main function to run the debug ingestion."""
     if len(sys.argv) != 2:
-        print("Usage: python debug_ingestion.py <file_path>")
-        print("Example: python debug_ingestion.py test.pdf")
+        print("Usage: python scripts/debug_ingestion.py <file_path>")
+        print("Example: python scripts/debug_ingestion.py test.pdf")
         return
     
     file_path = sys.argv[1]

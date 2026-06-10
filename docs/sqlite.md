@@ -1,47 +1,56 @@
-# Sqlite Store
+# SQLite Persistence
 
-## Overview
+SQLite is the operational persistence layer. The database path is `data/ikmas.db`.
 
-`sqlite_store.py` is the persistence layer for the orchestration backend.
+`app/backend/sqlite_store.py` owns connection setup, schema initialization, migrations for added columns, and storage helpers.
 
-It manages:
+## Connection
 
-- session creation
-- turn logging
-- artefact storage
-- citation/reference linking
-- user knowledge tracking
+`get_conn()`:
 
-The module uses SQLite as the operational knowledge layer.
+- creates the parent directory,
+- opens `DB_PATH`,
+- sets `sqlite3.Row`,
+- enables foreign keys.
 
----
+## Tables
 
-## Responsibilities
+| Table | Purpose |
+|---|---|
+| `sessions` | Chat session ids and creation timestamps |
+| `turns` | Full turn log: user input, role, state, route fields, confidence, payload JSON, system state |
+| `artefacts` | Persisted generated artifacts scoped by project/collection |
+| `links` | References from artifacts to source chunks or other refs |
+| `concepts` | Named concept records |
+| `user_knowledge` | User/concept mastery and next-review placeholder |
+| `users` | Auth profile, email, password hash, profile JSON |
+| `auth_sessions` | Remember-me token hashes, expiry, last use, revocation |
+| `session_history` | One-row session summaries for router context and UI history |
 
-This module provides a minimal storage API for:
+## Main APIs
 
-- initializing the database schema
-- creating sessions
-- persisting validated turn payloads
-- storing generated artefacts
-- updating user mastery over concepts
+- `init_db()`
+- `create_session(session_id)`
+- `log_turn(turn)`
+- `save_artefacts(artefacts, project, refs)`
+- `list_artefacts(project, limit=100)`
+- `get_artefact(artefact_id)`
+- `update_artefact(...)`
+- `delete_artefact(...)`
+- `find_similar_artefacts(...)`
 
-It is intentionally simple and deterministic.
+Authentication APIs live in `app/backend/auth.py` but use the same database.
 
----
+## Session History
 
-## Database Connection
+`store_session_history(...)` in `orchestrator.py` writes:
 
-### `get_conn()`
+- session title
+- latest user query
+- router classification JSON
+- generated artifact titles
+- citation chunk IDs
+- feedback JSON placeholder
+- nullable session embedding
 
-Creates a SQLite connection with:
-
-- `sqlite3.Row` row factory
-- foreign key enforcement enabled
-- automatic database directory creation
-
-```python
-conn = sqlite3.connect(DB_PATH)
-conn.row_factory = sqlite3.Row
-conn.execute("PRAGMA foreign_keys = ON;")
-```
+The router reads recent rows for the current user to provide related-session context. Semantic session embeddings are not implemented.

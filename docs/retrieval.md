@@ -1,189 +1,73 @@
 # Retrieval
 
-## Overview
+IKMAS uses ChromaDB for source-document chunks and an external rerank endpoint for passage ordering.
 
-The `retrieval.py` module acts as a **backend wrapper around the RAG pipeline**.
+## Modules
 
-It does **not perform retrieval itself**, but:
+| Module | Responsibility |
+|---|---|
+| `app/rag/storage.py` | Store, list, hash, dedupe, replace/rename/delete uploaded files |
+| `app/rag/ingest.py` | Extract files and split extracted documents into chunks |
+| `app/rag/extractors/*` | PDF, text, Markdown, DOCX, PPTX, image extraction |
+| `app/rag/tokenizer.py` | Load local tokenizer for token-based splitting |
+| `app/rag/vectorstore.py` | Chroma collection access, add, retrieve, clear |
+| `app/rag/retriever.py` | Similarity retrieval plus reranking |
+| `app/rag/reranker.py` | POST to OpenAI-compatible `/rerank` endpoint |
+| `app/backend/retrieval.py` | Normalize chunks and compute retrieval confidence |
 
-- Calls the existing retrieval + reranking logic
-- Extracts and normalizes relevance scores
-- Computes a **confidence metric**
-- Converts raw documents into a **standardized chunk format**
-- Returns a structured result for the orchestrator
+## Ingestion Lifecycle
 
----
+1. `save_upload(...)` writes files to `data/uploads/<collection_id>/`.
+2. `split_file(...)` chooses an extractor by suffix.
+3. Extracted `Document` metadata receives `file_id` and `source`.
+4. `split_documents(...)` uses `RecursiveCharacterTextSplitter.from_huggingface_tokenizer(...)`.
+5. `add_docs(...)` sanitizes metadata for Chroma and persists chunks.
 
-## Role in the Architecture
+Supported file types in the implemented extraction path:
 
-```
-User Input
-   ↓
-Orchestrator
-   ↓
-Retrieval Layer (this module)
-   ↓
-RAG Retriever + Reranker
-   ↓
-Structured Result + Confidence
-   ↓
-LLM Decision Logic
-```
+- `.pdf`
+- `.txt`
+- `.md`
+- `.docx`
+- `.pptx`
+- `.png`
+- `.jpg`
+- `.jpeg`
+- `.webp`
 
-This module bridges the gap between:
+## Query Lifecycle
 
-- **Low-level retrieval (LangChain, vector store)**
-- **High-level orchestration (roles, FSM, JSON output)**
+1. `retrieve(collection_name, query, k)` runs Chroma similarity search.
+2. `rerank(query, passages, top_n)` calls `BASE_URL + "/rerank"` with `RERANK_MODEL`.
+3. Reranker scores are attached as `doc.metadata["rerank_score"]`.
+4. `run_retrieval(...)` normalizes scores, computes confidence, and converts each `Document` into a chunk dict.
 
----
+Returned chunk shape:
 
-## Key Responsibilities
-
-### 1. Run Retrieval + Reranking
-
-```
-retrieve_and_rerank(...)
-```
-
-- Retrieves documents from the vector store
-- Applies reranking
-- Returns top-k ranked documents
-
----
-
-### 2. Extract Scores
-
-Each document contains a reranker score:
-
-```
-doc.metadata["rerank_score"]
-```
-
-The module extracts and normalizes it:
-
-```
-defextract_score(doc):
-returnnormalize_score(doc.metadata["rerank_score"])
-```
-
----
-
-### 3. Normalize Scores
-
-```
-defnormalize_score(score):
-returnclamp01(score)
-```
-
-Ensures all scores are within:
-
-```
-[0.0, 1.0]
-```
-
-This prevents instability across different models or APIs.
-
----
-
-### 4. Compute Coverage
-
-```
-coverage= (# of top-k scores ≥ threshold) / k
-```
-
-Example:
-
-```
-scores = [0.9, 0.8, 0.6, 0.3, 0.2]
-coverage = 3 / 5 = 0.6
-```
-
-**Purpose:**
-
-- Measures how many results are "good enough"
-- Prevents overconfidence from a single strong match
-
----
-
-### 5. Compute Confidence
-
-Core formula:
-
-```
-confidence=0.6*top1+0.3*avg_top3+0.1*coverage
-```
-
-Where:
-
-| Metric     | Meaning                     |
-| ---------- | --------------------------- |
-| `top1`     | Best match                  |
-| `avg_top3` | Average quality of top 3    |
-| `coverage` | Breadth of relevant results |
-
----
-
-### Example
-
-```
-scores= [0.9,0.8,0.7,0.4,0.2]
-
-top1=0.9
-avg_top3=0.8
-coverage=0.6
-
-confidence=0.84
-```
-
----
-
-## Confidence Policy (Used by Orchestrator)
-
-| Confidence Range | Behavior                 |
-| ---------------- | ------------------------ |
-| `< 0.55`         | Ask clarifying questions |
-| `0.55–0.75`      | Explain + 1 question     |
-| `>= 0.75`        | Direct answer            |
-
----
-
-## 6. Convert Documents → Chunks
-
-LangChain documents are transformed into a clean internal format:
-
-```
+```python
 {
-"chunk_id":str,
-"text":str,
-"source":str,
-"title":str|None,
-"page":int|None,
-"score":float,
-"metadata":dict
+    "chunk_id": "...",
+    "text": "...",
+    "source": "...",
+    "title": None,
+    "page": None,
+    "score": 0.0,
+    "metadata": {...},
 }
 ```
 
-### Why?
+## Confidence
 
-- Decouples from LangChain internals
-- Enables:
-   - Prompt construction
-   - Citations
-   - Logging
-   - Artefact linking
+`compute_confidence(...)` combines:
 
----
+- `top1`: highest rerank score
+- `avg_top3`: mean of top three scores, or all scores if fewer
+- `coverage`: fraction of top five scores above `0.5`
 
-## 7. Final Output
+Formula:
 
-```
-{
-"chunks": [...],
-"top1":float,
-"avg_top3":float,
-"coverage":float,
-"confidence":float,
-}
+```text
+confidence = 0.6 * top1 + 0.3 * avg_top3 + 0.1 * coverage
 ```
 
-This is consumed by the orchestrator.
+No retrieved docs produce zero scores and an empty chunk list.

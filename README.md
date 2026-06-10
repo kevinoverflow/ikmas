@@ -1,140 +1,100 @@
 # IKMAS
 
-## Intelligent Knowledge Management Assistance System
+IKMAS is an implementation-first RAG application for knowledge management. It runs as a Streamlit app with authenticated user workspaces, file upload and indexing, ChromaDB retrieval, LLM-based routing, role-specific prompting, structured JSON responses, generated knowledge artifacts, and SQLite persistence.
 
-**IKMAS (Intelligent Knowledge Management Assistance System in Collaborative Scenarios)** ist ein forschungsorientierter Open-Source-Prototyp zur Unterstützung wissensintensiver Prozesse in Arbeitsgruppen.
+The theoretical basis is the SECI knowledge-conversion model and Markus' knowledge-reuse situations, but the current repository implements a smaller production path than the full 4 x 4 role matrix. The active runtime routes to four role prompts and can generate three structured artifact types.
 
-Das Projekt schlägt eine methodische Brücke zwischen etablierter Wissensmanagement-Theorie und modernen technischen Möglichkeiten der generativen Künstlichen Intelligenz (GenAI).  
-Im Zentrum steht die theoriegeleitete Integration von KI-Assistenzfunktionen, basierend auf der Kombination des **SECI-Modells (Wissensentstehung)** und der **Knowledge Reuse Theory (Wissenswiederverwendung)**.
+## Current Runtime Architecture
 
----
-
-## 🚀 Kernkonzept
-
-Das System ist darauf ausgelegt, **16 spezifische GenAI-Rollen** abzubilden, die den Wissensaustausch zwischen unterschiedlichen Akteuren (z. B. Expert:innen, Noviz:innen, Teams) fördern.
-
-**Beispiele:**
-
-- **Digital Memory Agent (SWP × Socialization)**  
-  Bewahrung des flüchtigen Kontexts aus Team-Diskussionen.
-
-- **Expert Proxy Agent (SWPr × Socialization)**  
-  Skalierung von Expertenwissen durch dialogfähige Avatare.
-
-- **Mentor Agent (ESN × Socialization)**  
-  Übersetzung von Fachterminologie für Einsteiger:innen.
-
-- **Concept Mining Agent (SKM × Combination)**  
-  Identifikation abstrakter Muster in unstrukturierten Daten.
-
----
-
-## 🛠 Technische Architektur
-
-Der Prototyp nutzt einen **RAG-basierten Architekturansatz (Retrieval-Augmented Generation)**, um kontextspezifisches Wissen aus lokalen Dokumenten nutzbar zu machen.
-
-Die Implementierung setzt auf Open-Source-Technologien wie:
-
-- **[ChromaDB](https://www.trychroma.com/)** (Vektordatenbank)
-- [ScaDS.ai](https://scads.ai/) **LLMs**
-
----
-
-## 📂 Projektstruktur
-
-```bash
-.
-├── app
-│   ├── infrastructure/      # System-Konfiguration
-│   ├── rag/                 # Kernlogik (Ingest, Retriever, Reranker, Vectorstore)
-│   └── ui/                  # Benutzeroberfläche (Streamlit)
-├── data
-│   ├── chroma/              # Persistente Vektordatenbank
-│   └── uploads/             # Dokumentenspeicher (PDFs)
-├── tokenizers/              # Lokale Embedding-Modelle (Qwen3-Embedding-4B)
-├── requirements.txt         # Python-Abhängigkeiten
-└── run.sh                   # Start-Skript
+```text
+User
+  -> Streamlit UI
+  -> app.backend.orchestrator.handle_turn()
+  -> Router Agent
+  -> Chroma retrieval + reranking
+  -> role prompt + retrieved context
+  -> OpenAI-compatible chat backend
+  -> structured JSON validation/repair/fallback
+  -> artifact reuse and artifact subagents
+  -> SQLite persistence
+  -> Streamlit chat + artifact browser
 ```
 
----
+## Implemented Today
 
-## 📖 Methodik
+- Streamlit UI with login/registration, remembered auth sessions, user-scoped workspaces, chat, file workspace, indexing controls, session history, and artifact browser.
+- File storage under `data/uploads/<collection_id>/` with filename sanitization, hash dedupe, conflict handling, download, and delete.
+- Ingestion for PDF, TXT, Markdown, DOCX, PPTX, PNG, JPG/JPEG, and WEBP files.
+- ChromaDB vector storage under `data/chroma/`.
+- Retrieval pipeline: similarity search, external rerank endpoint, confidence scoring, citation chunk formatting.
+- LLM router agent that classifies SECI mode, reuse situation, active role, routing confidence, context requirements, and artifact generation plans.
+- Active role prompts: `ScribeAgent`, `SemanticLinkingAgent`, `MentorAgent`, `ContextReconstructorAgent`.
+- Structured assistant contract in `app/domain/schema.py`, with parse, normalize, repair, salvage, and deterministic fallback logic.
+- Artifact reuse and generation for `definition`, `concept`, and `quiz_item` artifacts.
+- SQLite persistence for users, auth sessions, sessions, turns, artifacts, links, concepts, user knowledge, and session history.
+- Optional LangSmith tracing.
 
-Die Entwicklung folgt dem **Design-Science-Research-Ansatz**.
+## Partially Implemented
 
-Anforderungen wurden durch:
+- Session awareness reads recent `session_history` rows and injects recurring routing themes and related sessions into the router. Embedding-based similarity and knowledge-gap extraction are placeholders.
+- Tutor FSM states exist in `app/backend/fsm.py`, but no `TutoringAgent` is registered in the active role set, so normal turns usually have `state = None`.
+- `concepts` and `user_knowledge` tables exist, but the adaptive learning/user-model layer is not wired into orchestration.
+- `ArtifactType` includes future types such as `prerequisite`, `pitfall`, and `case`, but only `definition`, `concept`, and `quiz_item` have executable generators.
+- `role_router.py` contains a small deterministic role matrix, but the main orchestrator currently uses the LLM router in `router_agent.py`.
 
-- quantitative Umfragen
-- qualitative Expert:inneninterviews
+## Planned / Not Implemented
 
-ermittelt, um den wahrgenommenen Mehrwert des IKMAS zu sichern.
+- Full 16-agent SECI x Markus matrix.
+- Silent Scribe, Knowledge Interviewer, Curator/Synthesizer, Tutor Agent, and Simulation Agent.
+- Event-driven SECI pipeline for meetings and organizational workflows.
+- Structured prerequisite graph, pitfalls, cases, spaced repetition scheduling, and mastery updates in the active UI flow.
 
----
+## Requirements
 
-## 🛠 Installation & Start
+- Python 3.11
+- `SCADS_API_KEY` or `OPENAI_API_KEY`
+- Optional: `LANGSMITH_API_KEY` and `LANGSMITH_TRACING=true`
 
-### Voraussetzungen
+Default provider configuration lives in `app/infrastructure/config.py`:
 
-- Python 3.10+
-- Eine gesetzte API-Variable: `SCADS_API_KEY` (alternativ `OPENAI_API_KEY`)
-- Optional für Tracing/Debugging: `LANGSMITH_API_KEY`
+- `OPENAI_BASE_URL` defaults to `https://llm.scads.ai/v1`
+- chat model defaults to `Qwen/Qwen3-Coder-30B-A3B-Instruct`
+- embedding model defaults to `Qwen/Qwen3-Embedding-4B`
+- rerank model defaults to `BAAI/bge-reranker-v2-m3`
 
-Beispiel:
-
-```bash
-export SCADS_API_KEY="<dein_key>"
-```
-
-Optional für LangSmith:
-
-```bash
-export LANGSMITH_TRACING=true
-export LANGSMITH_API_KEY="<dein_langsmith_key>"
-export LANGSMITH_PROJECT="ikmas"
-```
-
-> Hinweis: `run.sh` fragt den Schlüssel interaktiv ab, falls er nicht gesetzt ist. In CI-/nicht-interaktiven Umgebungen sollte der Key daher **vorher** als Umgebungsvariable gesetzt werden.
-
-1. Abhängigkeiten installieren:
-
-```bash
-pip install -r requirements.txt
-```
-
-2. Dokumente bereitstellen:
-
-- Dokumente können bequem über die **Streamlit-Oberfläche** hochgeladen werden.
-- Der Ordner `data/uploads/default` dient dabei als **Speicherort** für hochgeladene Dateien.
-
-3. Anwendung starten:
+## Run
 
 ```bash
 ./run.sh
 ```
 
-## Debugging mit LangSmith
+Manual startup:
 
-Der LLM-Pfad ist mit optionalem LangSmith-Tracing instrumentiert:
+```bash
+pip install -r requirements.txt
+streamlit run app/ui/streamlit_app.py
+```
 
-- `handle_turn(...)`
-- `run_retrieval(...)`
-- `LLMClient.generate_json(...)`
-- `LLMClient.repair_json(...)`
-- `OpenAIChatBackend.generate(...)`
+Run tests:
 
-Sobald `LANGSMITH_TRACING=true` und ein gültiger `LANGSMITH_API_KEY` gesetzt sind,
-werden diese Schritte als Traces an LangSmith gesendet. Ohne LangSmith-Konfiguration
-läuft die Anwendung unverändert weiter.
+```bash
+./run_tests.sh
+```
 
----
+## Repository Map
 
-## Förderung
+```text
+app/backend/          orchestration, router, FSM helper, persistence, auth, artifact system
+app/domain/           Pydantic schemas and shared dataclass/type contracts
+app/infrastructure/   config and tracing
+app/prompts/          router and active role prompts
+app/rag/              storage, extraction, chunking, Chroma, retrieval, reranking, OCR/vision
+app/ui/               Streamlit UI modules
+docs/                 implementation-first architecture documentation
+docs/archive/         historical proposals, summaries, and implementation notes
+scripts/              ad hoc demos and diagnostics; not the main test suite
+tests/                pytest coverage for backend, RAG, UI helpers, and artifact behavior
+tokenizers/           local Qwen3 embedding tokenizer files
+```
 
-Dieses Vorhaben wird gefördert vom **Bundesministerium für Bildung und Forschung (BMBF)** und dem **Freistaat Sachsen** im Rahmen der Exzellenzstrategie von Bund und Ländern.
-<br>
-
-<p align="center">
-  <img src="https://upload.wikimedia.org/wikipedia/commons/a/a2/Logo_TU_Dresden_2025.svg" alt="TU Dresden Logo" width="180"/>
-  &nbsp;&nbsp;&nbsp;
-  <img src="https://upload.wikimedia.org/wikipedia/de/b/ba/Dresden-concept_Logo.png" alt="Dresden Concept Logo" width="180"/>
-</p>
+Start with [docs/IKMAS.md](docs/IKMAS.md), then [docs/architecture.md](docs/architecture.md), [docs/orchestrator.md](docs/orchestrator.md), and [docs/artifact_system.md](docs/artifact_system.md).

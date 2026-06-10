@@ -1,271 +1,44 @@
-# Intent & Distance Classification (Iteration 1)
+# Intent and Distance
 
-Related docs:
+This repository contains two classification paths:
 
-- [IKMAS Overview](./IKMAS.md)
-- [Architecture](./architecture.md)
-- [Router Agent](./router_agent.md)
-- [Roles](./roles.md)
-- [Orchestrator](./orchestrator.md)
+1. The active LLM router in `app/backend/router_agent.py`.
+2. Legacy/deterministic helpers in `app/backend/intent_distance.py` and `app/backend/role_router.py`.
 
-This document defines the rule-based classification used to map user input to:
+The active orchestrator path uses the LLM router.
 
-- **Intent** (what the user wants)
-- **Knowledge Distance** (Markus reuse types)
+## Active Router Labels
 
-This version uses simple keyword matching for deterministic and testable behavior.
+The router classifies:
 
----
+- SECI mode: `Socialization`, `Externalization`, `Combination`, `Internalization`
+- Markus reuse situation: `Shared Work Producer`, `Shared Work Practitioner`, `Expertise-Seeking Novice`, `Secondary Knowledge Miner`
+- selected active role
 
-## Overview
+The router then maps reuse situations to compact internal distance labels:
 
-Pipeline:
+| Reuse situation | Distance |
+|---|---|
+| Shared Work Producer | `SWP` |
+| Shared Work Practitioner | `SWPr` |
+| Expertise-Seeking Novice | `ESN` |
+| Secondary Knowledge Miner | `SKM` |
 
-```
-User Input
-    ↓
-Intent Classification (keywords)
-    ↓
-Distance Estimation (rules)
-    ↓
-Knowledge Mode Inference
-    ↓
-Heuristic Fallback Router
-```
+SECI modes are mapped to internal knowledge modes:
 
----
+| SECI mode | KnowledgeMode |
+|---|---|
+| Socialization | `SOCIALIZATION` |
+| Externalization | `EXTERNALIZATION` |
+| Combination | `COMBINATION` |
+| Internalization | `INTERNALIZATION` |
 
-# Intent Classification
+## Legacy Helpers
 
-The system classifies each user query into exactly one intent.
+`app/backend/intent_distance.py` provides keyword/rule-based intent and distance scoring used by tests and earlier iterations. `app/backend/role_router.py` maps a small subset of `(Distance, KnowledgeMode)` pairs to active roles and falls back to `MentorAgent`.
 
-## 1. learn_mode
+These helpers are useful for deterministic tests and future fallback design, but they are not the primary routing mechanism in `handle_turn(...)`.
 
-Triggered when the user explicitly wants to learn, practice, or be tested.
+## Current Practical Meaning
 
-**Keywords:**
-
-- lern
-- prüf mich
-- quiz
-- üb
-- frage mich ab
-
-**Examples:**
-
-- „Prüf mich zu Mikroökonomie“
-- „Gib mir ein Quiz“
-- „Ich will das lernen“
-
----
-
-## 2. what_is
-
-Triggered when the user asks for definitions or explanations.
-
-**Keywords:**
-
-- was ist
-- erkläre
-- definition
-- bedeutet
-
-**Examples:**
-
-- „Was ist ein Nash-Gleichgewicht?“
-- „Erkläre mir Angebot und Nachfrage“
-
----
-
-## 3. simplify
-
-Triggered when the user asks for simpler explanations.
-
-**Keywords:**
-
-- einfach
-- vereinfacht
-- verständlich
-- für anfänger
-
-**Examples:**
-
-- „Erklär das einfach“
-- „Mach das verständlich“
-
----
-
-## 4. project_specific
-
-Triggered when the user refers to their own project or internal context.
-
-**Keywords:**
-
-- in unserem projekt
-- bei uns
-- unsere doku
-- unsere dateien
-
-**Examples:**
-
-- „Wie haben wir das im Projekt gelöst?“
-- „Was steht in unserer Doku dazu?“
-- „Erstelle aus unserer Doku eine Notiz“
-
----
-
-## 5. cross_context
-
-Triggered when the user asks about other teams or general best practices.
-
-**Keywords:**
-
-- wie machen andere
-- best practice
-- vergleich mit anderen
-
-**Examples:**
-
-- „Wie machen andere Teams das?“
-- „Was sind Best Practices?“
-
----
-
-## 6. pattern_mining
-
-Triggered when the user wants patterns, trends, or abstraction.
-
-**Keywords:**
-
-- muster
-- cluster
-- analysiere
-- finde konzepte
-- signal
-
-**Examples:**
-
-- „Finde Muster in diesen Daten“
-- „Welche Konzepte tauchen hier auf?“
-
----
-
-## Default Behavior
-
-If no keyword matches:
-
-→ fallback intent:
-
-```
-what_is
-```
-
----
-
-# Distance Estimation
-
-Distance is derived from intent and specific phrases.
-
-## ESN (Expertise-Seeking Novice)
-
-Triggered when:
-
-- intent is:
-   - what_is
-   - simplify
-   - learn_mode
-
-**Meaning:**
-
-User seeks understanding outside their expertise.
-
----
-
-## SWP (Shared Work Producer)
-
-Triggered when input contains:
-
-- „in unserem projekt“
-- „unsere dateien“
-
-**Meaning:**
-
-User refers to their own project or prior work.
-
----
-
-## SWPr (Shared Work Practitioner)
-
-Triggered when input contains:
-
-- „wie machen andere“
-- „andere teams“
-
-**Meaning:**
-
-User compares with peers in similar roles.
-
----
-
-## SKM (Secondary Knowledge Miner)
-
-Triggered when:
-
-- intent = pattern_mining
-- literature / paper / review context markers are present
-
-**Meaning:**
-
-User searches for abstract patterns or insights.
-
----
-
-## Default Behavior
-
-If no rule applies:
-
-```
-ESN
-```
-
----
-
-# Design Principles
-
-## Deterministic
-
-- Same input → same output
-- No randomness
-
-## Transparent
-
-- Every classification can be traced to a keyword
-
-## Testable
-
-- Easy to write unit tests for each rule
-
-## Fast
-
-- No external models required
-
----
-
-# Limitations (Iteration 1)
-
-- No synonym detection
-- No paraphrase understanding
-- No multi-intent handling
-- Sensitive to exact wording
-- No context awareness across turns
-
----
-
-## Current Note
-
-The active system now uses:
-
-- an [LLM Router Agent](./router_agent.md) as the primary router
-- these rules as deterministic fallback behavior
-
-So this document describes the fallback layer, not the entire routing stack.
+In persisted turns, `intent` is currently the router's free-text `reason`, not a closed intent enum. `distance` is the compact Markus label returned by the active route normalization.

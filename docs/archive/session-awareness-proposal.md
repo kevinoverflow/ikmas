@@ -200,7 +200,7 @@ Your abstract: "The prototype will be assessed in vignette-based scenarios with 
 
 1. **Vision doc (unused):** `ikmas-dreaming-design.md` — the full OpenClaw Dreaming concept
 2. **Scoped proposal:** `ikmas-dreaming-geneme-aligned.md` — earlier intermediate version
-3. **This file:** `ikmas-session-awareness-proposal.md` — scoped directly to abstract
+3. **This file:** `docs/archive/session-awareness-proposal.md` — scoped directly to abstract
 
 ---
 

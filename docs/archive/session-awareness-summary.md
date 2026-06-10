@@ -1,7 +1,7 @@
 # IKMAS Session Awareness Implementation Summary
 
 ## Overview
-This document summarizes the implementation of full session awareness in IKMAS as outlined in the `ikmas-session-awareness-proposal.md`.
+This archived document summarizes the implementation of session awareness in IKMAS as outlined in `session-awareness-proposal.md`.
 
 ## Implemented Features
 

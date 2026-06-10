@@ -5,8 +5,10 @@ the router concept to automatically detect when artifact generation is needed.
 """
 
 import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT_DIR))
 
 from app.backend.subagent_coordinator import subagent_coordinator, ArtifactGenerationRequest, ArtifactType
 

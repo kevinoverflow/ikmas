@@ -1,41 +1,56 @@
-# IKMAS Agent-Specific Model Configuration
+# Model Configuration
 
-This file contains the model configuration for different agents in the IKMAS system.
+Model and provider settings live in `app/infrastructure/config.py`.
 
-## Model Selection Strategy
+## Provider
 
-Based on the decision rules provided, each agent uses the most appropriate model:
+```text
+OPENAI_BASE_URL default: https://llm.scads.ai/v1
+API key: SCADS_API_KEY or OPENAI_API_KEY
+```
 
-### Router
-- Primary: MiniMax-M2.5 (fast, structured responses)
-- Fallback: Llama 4 Scout (for large contexts)
+The code uses OpenAI-compatible chat, embedding, and rerank APIs.
 
-### Scribe Agent
-- Primary: MiniMax-M2.5 (speed/quality balance for documentation)
-- Fallback: Llama 4 Scout (for long transcripts)
+## Chat Models
 
-### Semantic Linking Agent
-- Primary: Kimi-K2.5 (strong reasoning for linking)
-- Fallback: Llama 4 Scout (for large corpora)
+Default:
 
-### Mentor Agent
-- Primary: Kimi-K2.5 (best explanation quality)
-- Fallback: MiniMax-M2.5 (for speed in interactive mode)
+```text
+GLOBAL_MODEL_OVERRIDE=Qwen/Qwen3-Coder-30B-A3B-Instruct
+LANGUAGE_MODEL_NAME=<GLOBAL_MODEL_OVERRIDE>
+```
 
-### Context Reconstructor Agent
-- Primary: Kimi-K2.5 (best inference for reconstruction)
-- Fallback: Llama 4 Scout (for very long artifacts)
+Role-specific environment variables:
 
-### General LLM
-- Primary: Qwen/Qwen3-Coder-30B-A3B-Instruct (high-quality responses)
+- `ROUTER_MODEL_NAME`
+- `SCRIBE_MODEL_NAME`
+- `SEMANTIC_LINKING_MODEL_NAME`
+- `MENTOR_MODEL_NAME`
+- `CONTEXT_RECONSTRUCTOR_MODEL_NAME`
+- `LANGUAGE_MODEL_NAME`
 
-## Environment Variables
+Current implementation detail: `model_selection_for_role(...)` uses the role-specific variables for answer model selection, and a UI `model_override` can override the answer model. `OpenAIChatBackend()` without an explicit model uses `LLM_MODEL_NAME`; the router backend is created this way in `handle_turn(...)`.
 
-You can override the default models using these environment variables:
+## Embedding and Rerank
 
-- ROUTER_MODEL_NAME
-- SCRIBE_MODEL_NAME  
-- SEMANTIC_LINKING_MODEL_NAME
-- MENTOR_MODEL_NAME
-- CONTEXT_RECONSTRUCTOR_MODEL_NAME
-- LANGUAGE_MODEL_NAME
+Defaults:
+
+```text
+EMBEDDING_MODEL=Qwen/Qwen3-Embedding-4B
+RERANK_MODEL=BAAI/bge-reranker-v2-m3
+TOP_K=5
+TOKENIZER_DIR=tokenizers/Qwen3-Embedding-4B
+```
+
+Embedding calls are made through LangChain `OpenAIEmbeddings`. Reranking is a POST to `BASE_URL + "/rerank"`.
+
+## Data Paths
+
+```text
+DATA_DIR=<repo>/data
+UPLOAD_DIR=<DATA_DIR>/uploads
+CHROMA_DIR=<DATA_DIR>/chroma
+DB_PATH=data/ikmas.db
+```
+
+`UPLOAD_DIR` and `CHROMA_DIR` are created at import time.
