@@ -98,3 +98,19 @@ tokenizers/           local Qwen3 embedding tokenizer files
 ```
 
 Start with [docs/IKMAS.md](docs/IKMAS.md), then [docs/architecture.md](docs/architecture.md), [docs/orchestrator.md](docs/orchestrator.md), and [docs/artifact_system.md](docs/artifact_system.md).
+
+## License
+
+Copyright (c) 2026 Kevin Hoang
+
+IKMAS is licensed under the Apache License, Version 2.0.
+
+You may obtain a copy of the License at:
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+
+See the [LICENSE](LICENSE) file for the full license text.
+
+Third-party software components remain subject to their respective licenses.
